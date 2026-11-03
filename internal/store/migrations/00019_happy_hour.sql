@@ -4,8 +4,8 @@ CREATE TABLE IF NOT EXISTS happy_hour_config (
   id            INTEGER PRIMARY KEY CHECK (id = 1),
   enabled       INTEGER NOT NULL DEFAULT 1,
   needs_premium INTEGER NOT NULL DEFAULT 1,
-  start_minute  INTEGER NOT NULL DEFAULT 1140, -- 一天中的第几分钟，1140 = 19:00
-  duration_min  INTEGER NOT NULL DEFAULT 120,
+  start_minute  INTEGER NOT NULL DEFAULT 0,    -- 0 = 00:00，全天
+  duration_min  INTEGER NOT NULL DEFAULT 1440, -- 1440 = 24 小时
   xp_mult       REAL    NOT NULL DEFAULT 1.5,
   money_mult    REAL    NOT NULL DEFAULT 1.0
 );
