@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 )
@@ -44,13 +45,10 @@ func sealKey() []byte {
 	return h.Sum(nil)
 }
 
-// SealCode 把卡密加密成票据里的 enc 字段。
+// seal 用 AES-256-GCM 加密任意字节，返回 URL 安全的 base64。
 //
-// 空卡密返回空串，表示这张票据只做离线时效校验、不做在线复核。
-func SealCode(code string) (string, error) {
-	if code == "" {
-		return "", nil
-	}
+// 每次都用随机 nonce，因此相同明文两次加密结果不同。
+func seal(plain []byte) (string, error) {
 	block, err := aes.NewCipher(sealKey())
 	if err != nil {
 		return "", err
@@ -63,8 +61,37 @@ func SealCode(code string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	out := gcm.Seal(nonce, nonce, []byte(code), nil)
+	out := gcm.Seal(nonce, nonce, plain, nil)
 	return base64.RawURLEncoding.EncodeToString(out), nil
+}
+
+func open(blob string) ([]byte, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(blob)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(sealKey())
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return nil, ErrNoSecret
+	}
+	return gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+}
+
+// SealCode 把卡密加密成票据里的 enc 字段。
+//
+// 空卡密返回空串，表示这张票据只做离线时效校验、不做在线复核。
+func SealCode(code string) (string, error) {
+	if code == "" {
+		return "", nil
+	}
+	return seal([]byte(code))
 }
 
 // OpenCode 从 enc 字段还原卡密。
@@ -72,24 +99,33 @@ func OpenCode(enc string) (string, error) {
 	if enc == "" {
 		return "", ErrNoSecret
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(enc)
-	if err != nil {
-		return "", err
-	}
-	block, err := aes.NewCipher(sealKey())
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	if len(raw) < gcm.NonceSize() {
-		return "", ErrNoSecret
-	}
-	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+	plain, err := open(enc)
 	if err != nil {
 		return "", err
 	}
 	return string(plain), nil
+}
+
+// SealPayload 把票据内容整体加密，落盘时只留密文。
+//
+// 密文里包含卡密标识、卡密密文、签发与到期时间。这样打开文件
+// 既看不到卡密，也看不出有效期还剩多久。
+func SealPayload(p *Payload) (string, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	return seal(raw)
+}
+
+func OpenPayload(blob string) (*Payload, error) {
+	raw, err := open(blob)
+	if err != nil {
+		return nil, err
+	}
+	var p Payload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }

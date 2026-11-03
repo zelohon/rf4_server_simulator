@@ -1,4 +1,4 @@
-// Package license 实现离线授权票据的签发与校验。
+// Package license 实现授权票据的签发与校验。
 //
 // 票据由离线工具（cmd/license-gen）用 Ed25519 私钥签发，服务端只内置公钥。
 // 因此即使二进制被逆向，也无法伪造新票据；删除票据或篡改内容都会被拒绝。
@@ -31,12 +31,10 @@ var (
 
 // TicketVersion 是当前票据格式版本。
 //
-// v3 起票据额外携带「卡密密文」（Enc），用于启动时向授权平台复核：
-//   - 有网 → 平台判定卡密是否仍被允许，受平台控制；
-//   - 无网 → 只看本票据的 ExpireAt，到期即拒绝。
-//
-// 卡密以 AES-256-GCM 密文存放，打开文件看不到明文。
-const TicketVersion = 3
+// v4 起票据落盘只保留「版本 + 密文 + 签名」三样东西：
+// 卡密、卡密标识、签发时间、到期时间全部收进密文（见 Payload）。
+// 打开文件看不到任何可读信息，也看不出有效期还剩多久。
+const TicketVersion = 4
 
 // ticketFile 是票据在 <root>/data 下的文件名。
 //
@@ -44,26 +42,30 @@ const TicketVersion = 3
 // 文件名里出现 license/auth 会直接提示"这里有授权校验"。
 const ticketFile = "runtime.dat"
 
-// Ticket 是授权凭证。
+// Ticket 是落盘结构。
+//
+// Blob 是 Payload 的 AES-256-GCM 密文；Sig 是对 "版本|密文" 的 Ed25519 签名。
+// 先验签再解密：密文被替换或篡改会先被签名挡住，不需要碰密钥。
 type Ticket struct {
-	Version  int    `json:"v"`
+	Version int    `json:"v"`
+	Blob    string `json:"b"`
+	Sig     string `json:"sig"`
+}
+
+// Payload 是票据的实际内容，序列化后整体加密。
+type Payload struct {
 	Lic      string `json:"lic"`           // 卡密 SHA-256 前 12 位，仅用于人工核对
 	Enc      string `json:"enc,omitempty"` // 卡密密文，供启动时在线复核
 	IssuedAt int64  `json:"issued_at"`
 	ExpireAt int64  `json:"expire_at"`
 	Note     string `json:"note,omitempty"`
-	Sig      string `json:"sig"`
 }
 
-func (t *Ticket) payload() []byte {
-	return []byte(fmt.Sprintf("%d|%s|%s|%d|%d|%s",
-		t.Version, t.Lic, t.Enc, t.IssuedAt, t.ExpireAt, t.Note))
+func (t *Ticket) signedBytes() []byte {
+	return []byte(fmt.Sprintf("%d|%s", t.Version, t.Blob))
 }
 
 // LicID 把卡密折算成票据里使用的标识（SHA-256 前 12 位）。
-//
-// 票据只带这个标识，不带卡密本身，所以把程序分发给客户时
-// 即使有人打开这个文件也拿不到可用的卡密。
 func LicID(code string) string {
 	code = strings.TrimSpace(code)
 	if code == "" {
@@ -73,38 +75,43 @@ func LicID(code string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// Sign 用私钥签发票据。
-func Sign(t *Ticket, priv ed25519.PrivateKey) error {
+// Sign 加密内容并签名，返回可落盘的票据。
+func Sign(p *Payload, priv ed25519.PrivateKey) (*Ticket, error) {
 	if len(priv) != ed25519.PrivateKeySize {
-		return errors.New("license: bad private key")
+		return nil, errors.New("license: bad private key")
 	}
-	t.Version = TicketVersion
-	if t.IssuedAt == 0 {
-		t.IssuedAt = time.Now().Unix()
+	blob, err := SealPayload(p)
+	if err != nil {
+		return nil, err
 	}
-	t.Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, t.payload()))
-	return nil
+	t := &Ticket{Version: TicketVersion, Blob: blob}
+	t.Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, t.signedBytes()))
+	return t, nil
 }
 
-// Verify 校验签名与有效期。
-func Verify(t *Ticket, pub ed25519.PublicKey, now time.Time) error {
+// Verify 校验签名与有效期，通过后返回解密出来的内容。
+func Verify(t *Ticket, pub ed25519.PublicKey, now time.Time) (*Payload, error) {
 	if t.Version != TicketVersion {
-		return ErrBadSignature
+		return nil, ErrBadSignature
 	}
 	if len(pub) != ed25519.PublicKeySize {
-		return ErrBadSignature
+		return nil, ErrBadSignature
 	}
 	sig, err := base64.StdEncoding.DecodeString(t.Sig)
 	if err != nil || len(sig) != ed25519.SignatureSize {
-		return ErrBadSignature
+		return nil, ErrBadSignature
 	}
-	if !ed25519.Verify(pub, t.payload(), sig) {
-		return ErrBadSignature
+	if !ed25519.Verify(pub, t.signedBytes(), sig) {
+		return nil, ErrBadSignature
 	}
-	if now.Unix() > t.ExpireAt {
-		return ErrExpired
+	p, err := OpenPayload(t.Blob)
+	if err != nil {
+		return nil, ErrBadSignature
 	}
-	return nil
+	if now.Unix() > p.ExpireAt {
+		return nil, ErrExpired
+	}
+	return p, nil
 }
 
 // Load 从文件读取票据。
@@ -125,7 +132,15 @@ func Load(path string) (*Ticket, error) {
 // gateway 与 gameserver 用这个——它们只消费凭证，不联网，
 // 保证断网或平台故障时整套服务不会集体起不来。
 func Guard(rootDir string) error {
-	return GuardWith(PublicKey(), rootDir)
+	if DevMode(rootDir) {
+		return nil
+	}
+	t, err := Load(filepath.Join(rootDir, "data", ticketFile))
+	if err != nil {
+		return err
+	}
+	_, err = Verify(t, PublicKey(), time.Now())
+	return err
 }
 
 // GuardWith 用指定公钥校验，便于测试与灰度切换。
@@ -137,7 +152,8 @@ func GuardWith(pub ed25519.PublicKey, rootDir string) error {
 	if err != nil {
 		return err
 	}
-	return Verify(t, pub, time.Now())
+	_, err = Verify(t, pub, time.Now())
+	return err
 }
 
 // GuardOnline 本地校验 + 在线复核，供 admin 使用。
@@ -157,10 +173,11 @@ func GuardOnline(rootDir string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if err := Verify(t, PublicKey(), time.Now()); err != nil {
+	p, err := Verify(t, PublicKey(), time.Now())
+	if err != nil {
 		return err
 	}
-	code, err := OpenCode(t.Enc)
+	code, err := OpenCode(p.Enc)
 	if err != nil {
 		// 没有密文说明是纯离线票据，按有效期放行。
 		return nil
@@ -170,15 +187,6 @@ func GuardOnline(rootDir string, timeout time.Duration) error {
 		return ErrOnlineRejected
 	}
 	return nil
-}
-
-// GuardConfigOnline 按配置文件路径推导项目根目录后做在线复核。
-func GuardConfigOnline(configPath string, timeout time.Duration) error {
-	abs, err := filepath.Abs(configPath)
-	if err != nil {
-		return err
-	}
-	return GuardOnline(filepath.Dir(abs), timeout)
 }
 
 // GuardConfig 按配置文件路径推导项目根目录后再校验授权。
@@ -192,16 +200,31 @@ func GuardConfig(configPath string) error {
 	return Guard(filepath.Dir(abs))
 }
 
+// GuardConfigOnline 按配置文件路径推导项目根目录后做在线复核。
+func GuardConfigOnline(configPath string, timeout time.Duration) error {
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
+	}
+	return GuardOnline(filepath.Dir(abs), timeout)
+}
+
 // Remaining 返回票据剩余时长，便于内部巡检判断是否需要提前预警。
 func Remaining(rootDir string) (time.Duration, error) {
+	return RemainingWith(PublicKey(), rootDir)
+}
+
+// RemainingWith 用指定公钥解读剩余时长，便于测试。
+func RemainingWith(pub ed25519.PublicKey, rootDir string) (time.Duration, error) {
 	t, err := Load(filepath.Join(rootDir, "data", ticketFile))
 	if err != nil {
 		return 0, err
 	}
-	if err := Verify(t, PublicKey(), time.Now()); err != nil {
+	p, err := Verify(t, pub, time.Now())
+	if err != nil {
 		return 0, err
 	}
-	return time.Until(time.Unix(t.ExpireAt, 0)), nil
+	return time.Until(time.Unix(p.ExpireAt, 0)), nil
 }
 
 // DevMode 允许开发者在本机跳过校验，方便调试。

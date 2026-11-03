@@ -29,11 +29,17 @@ func main() {
 		keyPath = flag.String("key", "license-private.key", "私钥文件路径")
 		code    = flag.String("code", "", "卡密：以密文写入票据，供客户机启动时在线复核")
 		check   = flag.Bool("check", false, "签发前先在线验证卡密是否可用")
+		inspect = flag.String("inspect", "", "查看已签发票据的内容（仅本机使用，会显示卡密明文）")
 		days    = flag.Int("days", 180, "有效天数")
 		out     = flag.String("out", "auth.ticket", "票据输出路径")
 		note    = flag.String("note", "", "备注，例如客户名")
 	)
 	flag.Parse()
+
+	if *inspect != "" {
+		inspectTicket(*inspect)
+		return
+	}
 
 	if *initKey {
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -71,9 +77,10 @@ func main() {
 		}
 	}
 
-	t := license.Ticket{
+	p := license.Payload{
 		Lic:      license.LicID(*code),
 		Note:     strings.TrimSpace(*note),
+		IssuedAt: time.Now().Unix(),
 		ExpireAt: time.Now().AddDate(0, 0, *days).Unix(),
 	}
 	// 卡密以密文写进票据，供客户机启动时在线复核。
@@ -81,9 +88,10 @@ func main() {
 	if enc, err := license.SealCode(strings.TrimSpace(*code)); err != nil {
 		fail("卡密加密失败", err)
 	} else {
-		t.Enc = enc
+		p.Enc = enc
 	}
-	if err := license.Sign(&t, ed25519.PrivateKey(privBytes)); err != nil {
+	t, err := license.Sign(&p, ed25519.PrivateKey(privBytes))
+	if err != nil {
 		fail("签名失败", err)
 	}
 	data, err := json.MarshalIndent(t, "", "  ")
@@ -94,12 +102,12 @@ func main() {
 		fail("写入票据失败", err)
 	}
 	fmt.Printf("票据已生成: %s\n", *out)
-	if t.Lic != "" {
-		fmt.Printf("卡密标识: %s（仅哈希，卡密本身不写入票据）\n", t.Lic)
+	if p.Lic != "" {
+		fmt.Printf("卡密标识: %s（仅哈希，卡密本身不写入票据）\n", p.Lic)
 	}
 	fmt.Printf("签发: %s\n到期: %s（%d 天）\n",
-		time.Unix(t.IssuedAt, 0).Format("2006-01-02 15:04"),
-		time.Unix(t.ExpireAt, 0).Format("2006-01-02 15:04"),
+		time.Unix(p.IssuedAt, 0).Format("2006-01-02 15:04"),
+		time.Unix(p.ExpireAt, 0).Format("2006-01-02 15:04"),
 		*days)
 }
 
@@ -110,4 +118,42 @@ func fail(msg string, err error) {
 		fmt.Fprintln(os.Stderr, msg)
 	}
 	os.Exit(1)
+}
+
+// inspectTicket 还原票据内容，便于签发后自查。
+//
+// 票据落盘后是全密文，日常排查「这张票还剩多少天、是哪张卡」
+// 靠这个命令，不要靠翻文件。
+func inspectTicket(path string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fail("读取票据失败", err)
+	}
+	var t license.Ticket
+	if err := json.Unmarshal(raw, &t); err != nil {
+		fail("票据格式错误", err)
+	}
+	p, err := license.OpenPayload(t.Blob)
+	if err != nil {
+		fail("解密失败（票据可能不是本机签发的）", err)
+	}
+	fmt.Printf("票据: %s\n", path)
+	fmt.Printf("版本: %d\n", t.Version)
+	fmt.Printf("卡密标识: %s\n", p.Lic)
+	if p.Note != "" {
+		fmt.Printf("备注: %s\n", p.Note)
+	}
+	fmt.Printf("签发: %s\n", time.Unix(p.IssuedAt, 0).Format("2006-01-02 15:04"))
+	fmt.Printf("到期: %s\n", time.Unix(p.ExpireAt, 0).Format("2006-01-02 15:04"))
+	left := time.Until(time.Unix(p.ExpireAt, 0))
+	if left > 0 {
+		fmt.Printf("剩余: %d 天\n", int(left.Hours()/24))
+	} else {
+		fmt.Printf("状态: 已过期 %d 天\n", int(-left.Hours()/24))
+	}
+	if code, err := license.OpenCode(p.Enc); err == nil {
+		fmt.Printf("卡密: %s（仅本机可见）\n", code)
+	} else {
+		fmt.Printf("卡密: 无（纯离线票据）\n")
+	}
 }
