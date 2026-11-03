@@ -485,6 +485,34 @@ func (d *DB) ItemPriceGet(ctx context.Context, itemID string) (*ShopPrice, error
 	return p, nil
 }
 
+// ShopItemGetWithFallback 在“已知店铺”的货架上找不到商品时回退到全局价目。
+//
+// 客户端商店是按全局价目渲染的，有约 16% 的商品只存在于 item_price、
+// 不在任何店铺货架里；直接拒绝会让客户端只收到通用失败。
+// 未知店铺一律不回退，避免伪造店铺 ID 购买任意商品。
+// 返回值 fellBack 表示是否走了全局价目，便于调用方记录诊断日志。
+func (d *DB) ShopItemGetWithFallback(ctx context.Context, storeID, itemID string) (*ShopPrice, bool, error) {
+	shelf, err := d.effectiveShopShelf(ctx, storeID)
+	if err != nil {
+		return nil, false, err
+	}
+	itemID = strings.TrimSpace(itemID)
+	for _, p := range shelf.Effective {
+		if p.ItemID == itemID {
+			v := *p
+			return &v, false, nil
+		}
+	}
+	if !shelf.CatalogKnown {
+		return nil, false, sql.ErrNoRows
+	}
+	p, err := d.ItemPriceGet(ctx, itemID)
+	if err != nil {
+		return nil, false, err
+	}
+	return p, true, nil
+}
+
 // ItemPriceFallbackList 价目兜底货架（非空价前 N 件）。
 func (d *DB) ItemPriceFallbackList(ctx context.Context, limit int64) ([]*ShopPrice, error) {
 	rows, err := d.SQL.QueryContext(ctx, `

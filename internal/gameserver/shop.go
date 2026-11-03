@@ -68,9 +68,14 @@ func (s *Server) storePrice(ctx context.Context, storeID, itemID string, clientO
 		}
 		return uint64(price), nil
 	}
-	p, err := s.DB.ShopItemGet(ctx, storeID, itemID)
+	p, fellBack, err := s.DB.ShopItemGetWithFallback(ctx, storeID, itemID)
 	if err != nil {
 		return 0, fmt.Errorf("商品不在该店生效货架: %s@%s: %w", storeID, itemID, err)
+	}
+	if fellBack {
+		// 客户端按全局价目渲染，这类商品不在店铺货架里；回退后才买得到。
+		s.log.Warn("商品不在店铺货架，使用全局价目",
+			"store", storeID, "item", itemID)
 	}
 	return pick(p)
 }
