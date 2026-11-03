@@ -6,12 +6,15 @@ package license
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -24,10 +27,16 @@ var (
 	ErrExpired = errors.New("license: expired")
 )
 
+// TicketVersion 是当前票据格式版本。
+//
+// v2 起不再在票据里保存卡密明文，只保存卡密的 SHA-256 前缀（Lic），
+// 用于区分是哪张卡签发的。卡密只存在于签发者的机器上，绝不随包分发。
+const TicketVersion = 2
+
 // Ticket 是离线授权凭证。
 type Ticket struct {
 	Version  int    `json:"v"`
-	Code     string `json:"code"`
+	Lic      string `json:"lic"` // 卡密 SHA-256 前 12 位
 	IssuedAt int64  `json:"issued_at"`
 	ExpireAt int64  `json:"expire_at"`
 	Note     string `json:"note,omitempty"`
@@ -36,7 +45,20 @@ type Ticket struct {
 
 func (t *Ticket) payload() []byte {
 	return []byte(fmt.Sprintf("%d|%s|%d|%d|%s",
-		t.Version, t.Code, t.IssuedAt, t.ExpireAt, t.Note))
+		t.Version, t.Lic, t.IssuedAt, t.ExpireAt, t.Note))
+}
+
+// LicID 把卡密折算成票据里使用的标识（SHA-256 前 12 位）。
+//
+// 票据只带这个标识，不带卡密本身，所以把程序分发给客户时
+// 即使有人打开 auth.ticket 也拿不到可用的卡密。
+func LicID(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // Sign 用私钥签发票据。
@@ -44,7 +66,7 @@ func Sign(t *Ticket, priv ed25519.PrivateKey) error {
 	if len(priv) != ed25519.PrivateKeySize {
 		return errors.New("license: bad private key")
 	}
-	t.Version = 1
+	t.Version = TicketVersion
 	if t.IssuedAt == 0 {
 		t.IssuedAt = time.Now().Unix()
 	}
@@ -54,7 +76,7 @@ func Sign(t *Ticket, priv ed25519.PrivateKey) error {
 
 // Verify 校验签名与有效期。
 func Verify(t *Ticket, pub ed25519.PublicKey, now time.Time) error {
-	if t.Version != 1 {
+	if t.Version != TicketVersion {
 		return ErrBadSignature
 	}
 	if len(pub) != ed25519.PublicKeySize {

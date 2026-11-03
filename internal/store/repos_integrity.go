@@ -27,6 +27,7 @@ var PlayerTables = []string{
 // RuntimeTables 是运营/运行时/迁移元数据表，不属于静态资料或玩家存档。
 var RuntimeTables = []string{
 	"tunables", "admin_user", "audit_log", "gift_pack", "gw_token", "gw_handoff",
+	"gateway_account",
 	"kv", "admin_queue", "achievement_def", "static_dataset_meta", "schema_migrations",
 	"request_receipts", "market_offer", "shop_item_override",
 	"fish_weight_override", "fish_bite_setting",

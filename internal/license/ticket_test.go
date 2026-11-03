@@ -21,7 +21,7 @@ func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 
 func TestSignVerify(t *testing.T) {
 	pub, priv := newKey(t)
-	tk := &Ticket{Code: "TEST-CODE", ExpireAt: time.Now().Add(24 * time.Hour).Unix()}
+	tk := &Ticket{Lic: LicID("TEST-CODE"), ExpireAt: time.Now().Add(24 * time.Hour).Unix()}
 	if err := Sign(tk, priv); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestSignVerify(t *testing.T) {
 
 	// 篡改卡密
 	bad2 := *tk
-	bad2.Code = "OTHER"
+	bad2.Lic = LicID("OTHER")
 	if err := Verify(&bad2, pub, time.Now()); err != ErrBadSignature {
 		t.Fatalf("篡改卡密应被拒绝，得到 %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSignVerify(t *testing.T) {
 
 func TestExpired(t *testing.T) {
 	pub, priv := newKey(t)
-	tk := &Ticket{Code: "X", ExpireAt: time.Now().Add(-time.Minute).Unix()}
+	tk := &Ticket{Lic: LicID("X"), ExpireAt: time.Now().Add(-time.Minute).Unix()}
 	if err := Sign(tk, priv); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestGuardWith(t *testing.T) {
 	}
 
 	// 正常票据
-	tk := &Ticket{Code: "C", ExpireAt: time.Now().Add(48 * time.Hour).Unix()}
+	tk := &Ticket{Lic: LicID("C"), ExpireAt: time.Now().Add(48 * time.Hour).Unix()}
 	if err := Sign(tk, priv); err != nil {
 		t.Fatal(err)
 	}

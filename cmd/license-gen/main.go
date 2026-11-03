@@ -27,7 +27,7 @@ func main() {
 	var (
 		initKey = flag.Bool("init", false, "生成新的密钥对")
 		keyPath = flag.String("key", "license-private.key", "私钥文件路径")
-		code    = flag.String("code", "", "卡密（仅作记录，不参与校验）")
+		code    = flag.String("code", "", "卡密：只用于生成票据内的标识，卡密本身不会写进票据")
 		days    = flag.Int("days", 180, "有效天数")
 		out     = flag.String("out", "auth.ticket", "票据输出路径")
 		note    = flag.String("note", "", "备注，例如客户名")
@@ -58,7 +58,7 @@ func main() {
 	}
 
 	t := license.Ticket{
-		Code:     strings.TrimSpace(*code),
+		Lic:      license.LicID(*code),
 		Note:     strings.TrimSpace(*note),
 		ExpireAt: time.Now().AddDate(0, 0, *days).Unix(),
 	}
@@ -72,8 +72,11 @@ func main() {
 	if err := os.WriteFile(*out, data, 0o644); err != nil {
 		fail("写入票据失败", err)
 	}
-	fmt.Printf("票据已生成: %s\n签发: %s\n到期: %s（%d 天）\n",
-		*out,
+	fmt.Printf("票据已生成: %s\n", *out)
+	if t.Lic != "" {
+		fmt.Printf("卡密标识: %s（仅哈希，卡密本身不写入票据）\n", t.Lic)
+	}
+	fmt.Printf("签发: %s\n到期: %s（%d 天）\n",
 		time.Unix(t.IssuedAt, 0).Format("2006-01-02 15:04"),
 		time.Unix(t.ExpireAt, 0).Format("2006-01-02 15:04"),
 		*days)
