@@ -240,6 +240,12 @@ func (s *Server) handlePlayerSkillPoints(w http.ResponseWriter, r *http.Request)
 	if req.Points > 1000000 {
 		req.Points = 1000000
 	}
+	if s.db.SkillUnlimited(r.Context(), req.UID) {
+		// 无限技能点生效期间，手填的点数没有意义，直接返回面板固定值。
+		writeJSON(w, map[string]any{"ok": true, "unlimited": true,
+			"available_points": store.UnlimitedSkillPoints})
+		return
+	}
 	total, spent, _, _ := s.db.SkillPointsAvailable(r.Context(), req.UID)
 	bonus := req.Points - (total - spent)
 	if err := s.db.SetSkillBonus(r.Context(), req.UID, bonus); err != nil {
@@ -253,6 +259,77 @@ func (s *Server) handlePlayerSkillPoints(w http.ResponseWriter, r *http.Request)
 		fmt.Sprintf("%d", req.UID), fmt.Sprintf("available=%d bonus=%d", req.Points, bonus))
 	_, _, _, avail := s.db.SkillPointsAvailable(r.Context(), req.UID)
 	writeJSON(w, map[string]any{"ok": true, "available_points": avail})
+}
+
+// handlePlayerSkillMax 一键技能满：全部大类熟练度 100 + 全部节点满级，
+// 同时打开无限技能点，让玩家后续在游戏里继续加点也不会被点数卡住。
+func (s *Server) handlePlayerSkillMax(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UID int64 `json:"uid"`
+	}
+	if err := readJSON(r, &req); err != nil || req.UID == 0 {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	if _, err := s.db.EnsureProfile(r.Context(), req.UID); err != nil {
+		httpError(w, 404, "玩家不存在")
+		return
+	}
+	cats, nodes, err := s.db.MaxPlayerSkills(r.Context(), req.UID)
+	if err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	// 技能面板与档案（f6 可用点数）都要刷新，两帧都推一遍。
+	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{
+		"op": "refresh_skills", "uid": req.UID,
+	}))
+	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{
+		"op": "refresh_player", "uid": req.UID,
+	}))
+	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "skill_max",
+		strconv.FormatInt(req.UID, 10),
+		fmt.Sprintf("cats=%d nodes=%d unlimited=1", cats, nodes))
+	writeJSON(w, map[string]any{
+		"ok": true, "categories": cats, "nodes": nodes,
+		"unlimited": true, "available_points": store.UnlimitedSkillPoints,
+	})
+}
+
+// handlePlayerSkillUnlimited 开关"无限技能点"。关闭时清掉管理员偏移，
+// 可用点数回到等级累计的自然值，已学到的节点等级保持不变。
+func (s *Server) handlePlayerSkillUnlimited(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UID int64 `json:"uid"`
+		On  bool  `json:"on"`
+	}
+	if err := readJSON(r, &req); err != nil || req.UID == 0 {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	if _, err := s.db.EnsureProfile(r.Context(), req.UID); err != nil {
+		httpError(w, 404, "玩家不存在")
+		return
+	}
+	if err := s.db.SetSkillUnlimited(r.Context(), req.UID, req.On); err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{
+		"op": "refresh_skills", "uid": req.UID,
+	}))
+	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{
+		"op": "refresh_player", "uid": req.UID,
+	}))
+	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "skill_unlimited",
+		strconv.FormatInt(req.UID, 10), fmt.Sprintf("on=%v", req.On))
+	_, _, _, avail := s.db.SkillPointsAvailable(r.Context(), req.UID)
+	if req.On {
+		avail = store.UnlimitedSkillPoints
+	}
+	writeJSON(w, map[string]any{
+		"ok": true, "unlimited": req.On, "available_points": avail,
+	})
 }
 
 func (s *Server) handlePlayerItemDelete(w http.ResponseWriter, r *http.Request) {

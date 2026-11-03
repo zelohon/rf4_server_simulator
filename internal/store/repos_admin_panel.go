@@ -248,6 +248,81 @@ func (d *DB) SetSkillBonus(ctx context.Context, uid, bonus int64) error {
 	return d.KVSet(ctx, skillBonusKey(uid), strconv.FormatInt(bonus, 10))
 }
 
+// UnlimitedSkillPoints 是开启无限技能点时下发给客户端的可用点数。
+// 取 9999 而非 int64 上限：客户端面板按整数展示，过大数值会溢出或撑破布局。
+const UnlimitedSkillPoints int64 = 9999
+
+// skillUnlimitedKey 是"无限技能点"开关的 kv 键。
+func skillUnlimitedKey(uid int64) string { return fmt.Sprintf("skill_unlimited:%d", uid) }
+
+// SkillUnlimited 返回玩家是否开启了无限技能点。
+func (d *DB) SkillUnlimited(ctx context.Context, uid int64) bool {
+	v, ok, err := d.KVGet(ctx, skillUnlimitedKey(uid))
+	if err != nil || !ok {
+		return false
+	}
+	return strings.TrimSpace(v) == "1"
+}
+
+// SetSkillUnlimited 打开或关闭无限技能点。
+// 关闭时顺带把管理员偏移清零，让可用点数回到等级累计的自然值，
+// 否则之前为凑数写入的偏移会残留成"凭空多出来的点数"。
+func (d *DB) SetSkillUnlimited(ctx context.Context, uid int64, on bool) error {
+	if on {
+		return d.KVSet(ctx, skillUnlimitedKey(uid), "1")
+	}
+	if err := d.KVSet(ctx, skillUnlimitedKey(uid), "0"); err != nil {
+		return err
+	}
+	return d.SetSkillBonus(ctx, uid, 0)
+}
+
+// MaxPlayerSkills 一键技能满：把所有技能大类熟练度拉到 100，
+// 把全部可升级节点直接写成 max_level，并打开无限技能点开关。
+//
+// 说明：
+//   - 节点按 skill_def.max_level 写满，max_level=0 的信息型节点保持 0 级；
+//   - 不按 group_id 做互斥过滤——"满技能"语义就是把树全部点亮，
+//     客户端会按 311 返回的等级逐节点渲染，互斥只在正常学习路径上生效；
+//   - 整批写入放在事务里，避免中途失败留下半满的树。
+func (d *DB) MaxPlayerSkills(ctx context.Context, uid int64) (cats, nodes int64, err error) {
+	if err = d.SQL.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM skill_cat_def`).Scan(&cats); err != nil {
+		return 0, 0, err
+	}
+	if err = d.SQL.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM skill_def WHERE max_level > 0`).Scan(&nodes); err != nil {
+		return 0, 0, err
+	}
+	tx, err := d.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO skill(uid, skill_id, points)
+		SELECT ?, cat_id, ? FROM skill_cat_def WHERE 1
+		ON CONFLICT(uid, skill_id) DO UPDATE SET points=excluded.points`,
+		uid, maxSkillPoints); err != nil {
+		return 0, 0, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO skill_node(uid, node_id, level)
+		SELECT ?, node_id, max_level FROM skill_def WHERE max_level > 0
+		ON CONFLICT(uid, node_id) DO UPDATE SET level=excluded.level`,
+		uid); err != nil {
+		return 0, 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	if err = d.SetSkillUnlimited(ctx, uid, true); err != nil {
+		return 0, 0, err
+	}
+	return cats, nodes, nil
+}
+
 func (d *DB) ListAdminStores(ctx context.Context) ([]*AdminStoreView, error) {
 	catalog, err := embeddedShopKindCatalog()
 	if err != nil {

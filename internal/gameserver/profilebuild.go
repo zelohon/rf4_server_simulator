@@ -112,6 +112,10 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		membershipExp = uint64(proto.UnixToFiletime(p.MembershipExpireAt))
 	}
 	totalPts := skillPointsTotal(p.Level)
+	if s.skillPointsUnlimited(ctx, uid) {
+		// 无限技能点：档案 f6 也要给同一个面板值，否则角色面板与技能页对不上。
+		totalPts = store.UnlimitedSkillPoints
+	}
 
 	// 322 里的等级经验拆分
 	base := baseXp(p.Level)
@@ -201,6 +205,10 @@ func (s *Server) BuildSkillTree311(ctx context.Context, uid int64, availablePoin
 	avail := uint64(0)
 	if total > used {
 		avail = uint64(total - used)
+	}
+	if s.skillPointsUnlimited(ctx, uid) {
+		// 无限技能点：即便已投入点数远超等级累计，面板也显示固定可用点。
+		avail = uint64(store.UnlimitedSkillPoints)
 	}
 	if availablePointsOverride != ^uint64(0) {
 		avail = availablePointsOverride

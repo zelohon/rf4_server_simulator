@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"rf4server/internal/proto"
+	"rf4server/internal/store"
 )
 
 // fishingSkillBonus 保存钓鱼判定使用的三类技能增益。
@@ -168,8 +169,18 @@ func (s *Server) skillBonusPoints(ctx context.Context, uid int64) int64 {
 	return n
 }
 
+// skillPointsUnlimited 返回该玩家是否开启了"无限技能点"。
+// 管理端"一键技能满"会同时打开这个开关，之后玩家在游戏里继续加点不再被点数卡住。
+func (s *Server) skillPointsUnlimited(ctx context.Context, uid int64) bool {
+	return s != nil && s.DB != nil && s.DB.SkillUnlimited(ctx, uid)
+}
+
 // skillAvailablePoints 返回等级累计技能点减去已投入点数后的余额（含管理员偏移）。
+// 开启无限技能点时直接返回面板固定值。
 func (s *Server) skillAvailablePoints(ctx context.Context, uid int64) int64 {
+	if s.skillPointsUnlimited(ctx, uid) {
+		return store.UnlimitedSkillPoints
+	}
 	p, err := s.DB.EnsureProfile(ctx, uid)
 	if err != nil {
 		return 0
