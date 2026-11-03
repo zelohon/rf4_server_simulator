@@ -29,6 +29,9 @@ type settleXpResult struct {
 	levelsGained int64 // 本次升级数（310.f5）
 	isRecord     bool  // 是否破纪录（310.f1；当前固定为 0）
 	skillID      int64 // 310.f2 钓法大类（1 浮钓 / 2 纺车）
+	// 会员 + 欢乐时光加成（B 段）
+	appliedBonuses []uint32 // 生效的加成类型（4=会员 56=欢乐时光），供 310.f6 展示
+	bonusMult      float64  // 本次总倍率（1.0 = 无加成）
 }
 
 // grantXpMonotonic 增加累计经验并重算等级，保证等级不下降。
@@ -71,6 +74,22 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ba
 		r.baseXP = 1
 	}
 	r.totalXP = r.baseXP
+
+	// —— 会员 + 欢乐时光倍率（B 段）——
+	// 倍率只作用于经验，不改变银价；门控由 IsPremium / HappyHourState 决定。
+	r.bonusMult = 1.0
+	if s.IsPremium(ctx, uid) {
+		r.bonusMult *= premiumXPBonus
+		r.appliedBonuses = append(r.appliedBonuses, bonusTypePremium)
+	}
+	if active, _, hm := s.HappyHourState(ctx, uid); active {
+		r.bonusMult *= hm
+		r.appliedBonuses = append(r.appliedBonuses, bonusTypeHappyHour)
+	}
+	if r.bonusMult != 1.0 {
+		r.totalXP = int64(math.Round(float64(r.baseXP) * r.bonusMult))
+	}
+
 	r.silver = silver
 	// 写入 catch_log 前读取现有纪录。
 	r.prevBest, _ = s.DB.CatchLogMaxWeight(ctx, uid, f.Species)

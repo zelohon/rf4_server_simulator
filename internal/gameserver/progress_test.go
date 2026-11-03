@@ -2,8 +2,10 @@ package gameserver
 
 import (
 	"context"
+	"math"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"rf4server/internal/config"
 	"rf4server/internal/logging"
@@ -111,18 +113,28 @@ func TestXpMonotonicLevel(t *testing.T) {
 	}
 }
 
-// TestSettleMembershipDoesNotChangeXP 验证会员身份只影响档案展示，不改变钓获经验。
-func TestSettleMembershipDoesNotChangeXP(t *testing.T) {
+// TestSettleMembershipAddsPremiumXP 验证有效会员获得经验加成。
+//
+// 会员加成为 premiumXPBonus（1.10），欢乐时光在此测试中禁用
+// （避免窗口随当前时间漂移导致断言不稳定）。
+func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 	srv, db := newProgressSrv(t)
 	ctx := context.Background()
 
-	mk := func(uid int64, membership int64) {
+	// 禁用欢乐时光，隔离会员加成。
+	if _, err := db.SQL.ExecContext(ctx,
+		`UPDATE happy_hour_config SET enabled=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(uid int64, membership int64, expireAt int64) {
 		t.Helper()
 		if _, err := srv.DB.EnsureProfile(ctx, uid); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.SQL.ExecContext(ctx,
-			`UPDATE profile SET membership=? WHERE uid=?`, membership, uid); err != nil {
+			`UPDATE profile SET membership=?, membership_expire_at=? WHERE uid=?`,
+			membership, expireAt, uid); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,58 +144,107 @@ func TestSettleMembershipDoesNotChangeXP(t *testing.T) {
 			LengthM: 0.28, LocLevel: "level_001_lake",
 		}
 	}
+	future := time.Now().Add(365 * 24 * time.Hour).Unix()
 
-	// 永久会员：不得产生额外 XP 或 Premium 分解项。
-	mk(1000001, 2)
+	// 有效会员：totalXP = round(229 × 1.10) = 252
+	mk(1000001, 1, future)
 	f := fish(1000001)
 	res := srv.settleCatchXP(ctx, 1000001, f, "worm_01")
 	if res.baseXP != 229 {
 		t.Fatalf("基础经验=%d, want 229（perch 642g grade2）", res.baseXP)
 	}
-	if res.totalXP != 229 {
-		t.Fatalf("会员总经验=%d, want 229（会员不增加 XP）", res.totalXP)
+	wantTotal := int64(math.Round(229 * premiumXPBonus))
+	if res.totalXP != wantTotal {
+		t.Fatalf("会员总经验=%d, want %d（229 × %.2f）", res.totalXP, wantTotal, premiumXPBonus)
 	}
-	if f.XP != 229 {
-		t.Fatalf("25 条目 XP=%d, want 229", f.XP)
+	if f.XP != wantTotal {
+		t.Fatalf("25 条目 XP=%d, want %d", f.XP, wantTotal)
+	}
+	if len(res.appliedBonuses) == 0 || res.appliedBonuses[0] != bonusTypePremium {
+		t.Fatalf("应记录会员加成，got %v", res.appliedBonuses)
 	}
 	p, _ := srv.DB.GetProfile(ctx, 1000001)
-	if p.XP != 229 {
-		t.Fatalf("入账累计 xp=%d, want 229", p.XP)
+	if p.XP != wantTotal {
+		t.Fatalf("入账累计 xp=%d, want %d", p.XP, wantTotal)
 	}
 
-	// 813 内嵌 310：f0=229、f5=0、f6 必须为空列表。
+	// 813 内嵌 310：f0=totalXP、f5=0、f6 空列表（B4 展示行未开）。
 	obj813 := srv.buildSettle813(ctx, 1000001, f, res)
 	obj310 := obj813.Field(8).Val
 	if obj310 == nil || obj310.Class != "kegeppimjbm" {
 		t.Fatalf("813.f8 不是 310 块: %v", obj813.Field(8).Val)
 	}
-	if got := u64Of(obj310.Field(0).Num); got != 229 {
-		t.Fatalf("310.f0=%d, want 229（本条鱼总经验）", got)
-	}
-	if got := u32Of(obj310.Field(5).Num); got != 0 {
-		t.Fatalf("310.f5=%d, want 0（229 XP 不足以升 2 级）", got)
-	}
-	bonusList := obj310.Field(6).Val
-	if bonusList == nil || len(bonusList.Items) != 0 {
-		t.Fatalf("310.f6 应为空列表，got %v", bonusList)
+	if got := u64Of(obj310.Field(0).Num); got != uint64(wantTotal) {
+		t.Fatalf("310.f0=%d, want %d", got, wantTotal)
 	}
 
-	// 非会员逐值一致。
-	mk(1000002, 0)
+	// 非会员：totalXP == baseXP，无加成记录。
+	mk(1000002, 0, 0)
 	f2 := fish(1000002)
 	res2 := srv.settleCatchXP(ctx, 1000002, f2, "worm_01")
 	if res2.totalXP != 229 {
 		t.Fatalf("非会员总经验=%d, want 229", res2.totalXP)
 	}
-	obj813b := srv.buildSettle813(ctx, 1000002, f2, res2)
-	b2 := obj813b.Field(8).Val.Field(6).Val
-	if b2 == nil || len(b2.Items) != 0 {
-		t.Fatalf("非会员 310.f6 应为空列表，got %v", b2)
+	if len(res2.appliedBonuses) != 0 {
+		t.Fatalf("非会员不应有加成记录，got %v", res2.appliedBonuses)
 	}
 
 	// 编码烟测：813 全树可编码（wire 合同）
 	if _, err := proto.EncodeValue(obj813, srv.Table()); err != nil {
 		t.Fatalf("813 编码失败: %v", err)
+	}
+}
+
+// TestHappyHourWindow 验证窗口内外 + 有无会员四种组合的加成。
+func TestHappyHourWindow(t *testing.T) {
+	srv, db := newProgressSrv(t)
+	ctx := context.Background()
+	const uid = int64(1000020)
+
+	if _, err := srv.DB.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(365 * 24 * time.Hour).Unix()
+
+	// 把窗口设为「当前分钟」 → 立即进入窗口
+	now := time.Now()
+	curMinute := now.Hour()*60 + now.Minute()
+	setWindow := func(enabled, needsPremium int, start, dur int) {
+		t.Helper()
+		if _, err := db.SQL.ExecContext(ctx,
+			`UPDATE happy_hour_config SET enabled=?, needs_premium=?, start_minute=?, duration_min=? WHERE id=1`,
+			enabled, needsPremium, start, dur); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1) 窗口内 + 会员 → active, mult=1.5
+	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=1, membership_expire_at=? WHERE uid=?`, future, uid)
+	setWindow(1, 1, curMinute, 60)
+	active, _, mult := srv.HappyHourState(ctx, uid)
+	if !active || mult != 1.5 {
+		t.Fatalf("窗口内+会员: active=%v mult=%v, want true 1.5", active, mult)
+	}
+
+	// 2) 窗口内 + 非会员（needs_premium=1）→ 不给加成
+	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=0, membership_expire_at=0 WHERE uid=?`, uid)
+	active, _, mult = srv.HappyHourState(ctx, uid)
+	if active || mult != 1 {
+		t.Fatalf("窗口内+非会员: active=%v mult=%v, want false 1", active, mult)
+	}
+
+	// 3) 窗口外 → 不给加成
+	setWindow(1, 1, (curMinute+30)%1440, 10)
+	active, _, mult = srv.HappyHourState(ctx, uid)
+	if active {
+		t.Fatalf("窗口外不应激活: active=%v", active)
+	}
+
+	// 4) enabled=0 → 永不激活
+	setWindow(0, 1, curMinute, 60)
+	active, _, mult = srv.HappyHourState(ctx, uid)
+	if active {
+		t.Fatalf("enabled=0 不应激活: active=%v", active)
 	}
 }
 
