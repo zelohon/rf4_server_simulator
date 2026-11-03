@@ -110,7 +110,8 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ba
 	s.log.Info("14/4 结算",
 		"鱼种", f.Species, "重量", f.WeightG, "grade", f.Grade,
 		"基础经验", r.baseXP, "总经验", r.totalXP,
-		"新纪录", r.isRecord, "累计", r.totalXp, "等级", r.newLevel)
+		"新纪录", r.isRecord, "累计", r.totalXp, "等级", r.newLevel,
+		"升级", r.levelsGained)
 	return r
 }
 
