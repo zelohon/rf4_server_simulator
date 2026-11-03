@@ -3,7 +3,7 @@
 
 用法：
     python build_release.py --name 客户A
-    python build_release.py --name 客户A --days 365 --out D:\\release
+    python build_release.py --name 客户A --days 365 --out D:\\RF4\\out
 
 产物：
     <out>\\fish-localserver-<客户名>-<日期>.zip
@@ -25,8 +25,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-MIN_DIR = Path(r"C:\Users\edge\Desktop\fish-localserver-min")
-GO_BIN = Path(r"D:\rf4_src\bin")
+MIN_DIR = Path(r"D:\RF4\dist")
+GO_BIN = Path(r"D:\RF4\go\bin")
 PRIVATE_KEY = Path(r"D:\license-private.key")
 # 卡密不再有默认值：一客户一卡，打包时必须显式传 --code。
 
@@ -180,7 +180,7 @@ def main():
                     help="该客户专属卡密（一客户一卡）。留空则生成不联网的纯离线包")
     ap.add_argument("--no-check", action="store_true",
                     help="跳过签发前的卡密在线验证")
-    ap.add_argument("--out", default=r"D:\release", help="输出目录")
+    ap.add_argument("--out", default=r"D:\RF4\out", help="输出目录")
     ap.add_argument("--admin-pass", default="", help="管理密码，留空则随机生成")
     args = ap.parse_args()
 
