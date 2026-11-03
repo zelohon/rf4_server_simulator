@@ -258,6 +258,14 @@ func (d *DB) InsertItem(ctx context.Context, it *Item) error {
 	return err
 }
 
+// UpdateItemWire 改写实例的 wire 类、类型号、字段快照和数量。
+func (d *DB) UpdateItemWire(ctx context.Context, guid, wireClass string, typeID int64, fieldsJSON string, qty int64) error {
+	_, err := d.SQL.ExecContext(ctx, `
+		UPDATE item SET wire_class=?, type_id=?, fields_json=?, qty=?
+		WHERE guid=?`, wireClass, typeID, fieldsJSON, qty, guid)
+	return err
+}
+
 // UpdateItemFields 更新字段快照/数量/耐久/工艺/装配。
 func (d *DB) UpdateItemFields(ctx context.Context, guid string, fieldsJSON string, qty int64, durability, workmanship float64, rigGUID string) error {
 	_, err := d.SQL.ExecContext(ctx, `

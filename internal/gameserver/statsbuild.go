@@ -64,12 +64,15 @@ func (s *Server) buildStats321(ctx context.Context, uid int64) (*proto.Value, er
 	}
 
 	total := int64(len(rows))
-	var rare int64
+	var rare, superRare int64
 	dailyCount := map[string]int64{}
 	dailyWeight := map[string]float64{}
 	for _, r := range rows {
 		if r.Grade >= 3 {
 			rare++
+		}
+		if r.Grade >= 4 {
+			superRare++
 		}
 		d := time.Unix(int64(r.TS), 0).In(time.Local).Format("2006-01-02")
 		dailyCount[d]++
@@ -155,7 +158,7 @@ func (s *Server) buildStats321(ctx context.Context, uid int64) (*proto.Value, er
 	return wiregen.MustMakeObj("jahbacemfof", map[int]*proto.Value{
 		0:  proto.U32(uint32(total)),
 		1:  proto.U32(uint32(rare)),
-		2:  proto.U32(0), // 统计概览中的 super_rare 当前固定为 0
+		2:  proto.U32(uint32(superRare)), // 蓝冠（grade>=4）
 		3:  proto.U32(uint32(s.playerCounter(ctx, uid, "escapes"))),
 		4:  proto.U32(uint32(maxDailyCount)),
 		5:  proto.F32(float32(maxDailyWeightG / 1000.0)),

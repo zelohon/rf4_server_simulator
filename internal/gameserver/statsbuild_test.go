@@ -45,6 +45,10 @@ func TestFishStats321FromCatchLog(t *testing.T) {
 	if got := f1.U32(); got != 2 {
 		t.Fatalf("f1 稀有=%d，期望2（grade>=3）", got)
 	}
+	f2 := dec.Field(2)
+	if got := f2.U32(); got != 1 {
+		t.Fatalf("f2 蓝冠=%d，期望1（grade>=4）", got)
+	}
 	f4 := dec.Field(4)
 	if got := f4.U32(); got != 4 {
 		t.Fatalf("f4 单日数量纪录=%d，期望4", got)

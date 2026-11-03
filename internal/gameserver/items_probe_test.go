@@ -529,3 +529,101 @@ func TestProbeCreatedFields(t *testing.T) {
 		t.Logf("[%d] %s", i, b)
 	}
 }
+
+// TestWorkshopToolsAreNotFishingLine 工坊工具和材料不能再落成钓线类。
+// 已经按钓线类买进背包的钳子，启动修复后改写成工具类并保留 guid。
+func TestWorkshopToolsAreNotFishingLine(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "workshop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	importStaticForProbe(t, db)
+	ctx := context.Background()
+	srv := NewServer(config.Game{Tunnel: config.Tunnel{PSK: "workshop"}}, logging.Discard(), nil)
+	srv.SetDB(db)
+
+	pliers, err := srv.CreateItem(ctx, 1000001, "fishing_pliers", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pliers.WireClass != "jceogpbfpjh" || pliers.TypeID != 163 {
+		t.Fatalf("钓鱼工具 wire=%s type=%d，期望 jceogpbfpjh/163", pliers.WireClass, pliers.TypeID)
+	}
+	fields, err := FieldsFromJSON(pliers.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idIdx := fieldIdxByCS(pliers.WireClass, csNumericID)
+	guidIdx := fieldIdxByCS(pliers.WireClass, csGUID)
+	if idIdx < 0 || guidIdx < 0 {
+		t.Fatal("工具类缺少数字 id 或 guid")
+	}
+	if got := u64Of(fields[idIdx].Num); got != 6347 {
+		t.Fatalf("钓鱼工具数字 id=%d，期望 6347", got)
+	}
+	if fields[guidIdx].Hex == "" {
+		t.Fatal("钓鱼工具 guid 为空")
+	}
+
+	mat, err := srv.CreateItem(ctx, 1000001, "charcoal_bag", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mat.WireClass != "nacllfpgomk" || mat.TypeID != 142 {
+		t.Fatalf("木炭 wire=%s type=%d，期望 nacllfpgomk/142", mat.WireClass, mat.TypeID)
+	}
+	mf, err := FieldsFromJSON(mat.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qi := fieldIdxByCS(mat.WireClass, csQty)
+	if qi < 0 || u64Of(mf[qi].Num) == 0 {
+		t.Fatalf("材料数量字段=%d 值=%d", qi, u64Of(mf[qi].Num))
+	}
+
+	line, err := srv.CreateItem(ctx, 1000001, "mono_15097", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line.WireClass != fallbackWireClass || line.TypeID != fallbackTypeID {
+		t.Fatalf("钓线被改类: %s/%d", line.WireClass, line.TypeID)
+	}
+
+	def, err := db.GetItemDefByItemID(ctx, "fishing_pliers")
+	if err != nil || def == nil {
+		t.Fatal(err)
+	}
+	const badGUID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bad := &store.Item{
+		GUID: badGUID, UID: 1000001, ItemID: "fishing_pliers", NumericID: def.NumericID,
+		WireClass: fallbackWireClass, TypeID: fallbackTypeID, Container: "backpack",
+		Qty: 1, Durability: 0.8, Workmanship: 1, FieldsJSON: "[]",
+	}
+	if err := db.InsertItem(ctx, bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.RepairItemPhysics(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetItemByGUID(ctx, badGUID)
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	if got.WireClass != "jceogpbfpjh" || got.TypeID != 163 {
+		t.Fatalf("已购钳子修复后 wire=%s type=%d", got.WireClass, got.TypeID)
+	}
+	if got.Durability != 0.8 {
+		t.Fatalf("修复改写了耐久 %f", got.Durability)
+	}
+	gf, err := FieldsFromJSON(got.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex := gf[fieldIdxByCS(got.WireClass, csGUID)].Hex; hex != badGUID {
+		t.Fatalf("修复后 guid=%s，期望保持 %s", hex, badGUID)
+	}
+}

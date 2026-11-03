@@ -16,7 +16,7 @@ func registerTimelineHandlers(d *Dispatch) { // fire-and-forget：客户端不�
 
 	// 空集/无数据语义
 	d.Register(6, 2, hNull)          // comp/load 无竞赛 → null
-	d.Register(24, 3, hNull)         // social/current 未进频道 → null
+	d.Register(24, 3, hSocialCurrent) // social/current：返回当前公共聊天频道
 	d.Register(24, 12, hU32ArrEmpty) // social/bl_get 黑名单 → 空 u32 数组
 	d.Register(9, 5, hCraftTemplates)
 

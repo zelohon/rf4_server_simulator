@@ -114,7 +114,7 @@ func (d *Dispatch) executeRequest(ctx *Ctx, interceptReplies bool) requestExecut
 		gsFallbacks.WithLabelValues(kind).Inc()
 		if traceCmds {
 			ctx.Sess.log.Info("TRACE 回(兜底)", "cmd", ctx.Key(), "kind", kind, "len", len(body),
-				"hex", traceHexHead(body, 160))
+				"hex", traceHexHead(body, traceHexMax))
 		}
 		return requestExecutionResult{body: body, hasResponse: true}
 	} else if kind != "" {
@@ -133,7 +133,7 @@ func (d *Dispatch) finishHandlerResponse(ctx *Ctx, body []byte) requestExecution
 	}
 	if traceCmds {
 		ctx.Sess.log.Info("TRACE 回", "cmd", ctx.Key(), "len", len(body),
-			"hex", traceHexHead(body, 160))
+			"hex", traceHexHead(body, traceHexMax))
 	}
 	return requestExecutionResult{body: append([]byte(nil), body...), hasResponse: true}
 }

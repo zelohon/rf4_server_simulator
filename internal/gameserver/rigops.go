@@ -447,6 +447,43 @@ func (s *Server) saveItemFields(ctx context.Context, row *store.Item, fields []p
 	_ = s.DB.UpdateItemFields(ctx, row.GUID, fj, row.Qty, row.Durability, row.Workmanship, row.RigGUID)
 }
 
+// BackfillRigProjections 以竿实例的 f5/f3/f4 为真源，重建全部 rig_component 派生行。
+//
+// 历史数据只把装配结果写进了实例字段，派生表为空时修理面板拿不到任何可修组件
+// （零件列表与报价都是空）。启动时跑一遍，幂等；失败逐条告警，不再静默丢弃。
+func (s *Server) BackfillRigProjections(ctx context.Context) (int, error) {
+	if s.DB == nil {
+		return 0, fmt.Errorf("数据库未连接")
+	}
+	rows, err := s.DB.SQL.QueryContext(ctx,
+		`SELECT guid FROM item WHERE wire_class=?`, "cnolibojkao")
+	if err != nil {
+		return 0, err
+	}
+	var guids []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		guids = append(guids, g)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	done := 0
+	for _, g := range guids {
+		if err := s.reconcileRigProjection(ctx, g); err != nil {
+			s.log.Warn("装配投影回填失败", "rod", shortGUID(g), "err", err)
+			continue
+		}
+		done++
+	}
+	return done, nil
+}
+
 // reconcileRigProjection 以实例 f5、f3 和 f4 为数据源，全量重建 rig_component。
 // 派生表不反向合并，避免换类型或拆卸后留下失效索引。
 func (s *Server) reconcileRigProjection(ctx context.Context, rodGUID string) error {

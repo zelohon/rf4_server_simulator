@@ -177,6 +177,16 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 	if got := u64Of(obj310.Field(0).Num); got != uint64(wantTotal) {
 		t.Fatalf("310.f0=%d, want %d", got, wantTotal)
 	}
+	if got := u32Of(obj310.Field(1).Num); got != 1 {
+		t.Fatalf("310.f1=%d, want 1（该鱼种尚无入护纪录）", got)
+	}
+	if got := u32Of(obj310.Field(5).Num); got != 0 {
+		t.Fatalf("310.f5=%d, want 0", got)
+	}
+	bonusList := obj310.Field(6).Val
+	if bonusList == nil || len(bonusList.Items) != 0 {
+		t.Fatalf("310.f6 应为空列表，got %v", bonusList)
+	}
 
 	// 非会员：totalXP == baseXP，无加成记录。
 	mk(1000002, 0, 0)
@@ -314,6 +324,37 @@ func TestGradeLinesFromSpeciesWeight(t *testing.T) {
 		1: proto.U32(uint32(w)),
 		3: proto.U32(uint32(g)),
 	})
+}
+
+func TestPersonalRecordFlagFollowsKeptWeight(t *testing.T) {
+	srv, db := newProgressSrv(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+	if _, err := srv.DB.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CatchLogInsert(ctx, uid, "loc", 1, "perch", "", 800, 0.3, "keep", "worm", 3, 10, 10, "level_001_lake"); err != nil {
+		t.Fatal(err)
+	}
+	lighter := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 2, WeightG: 642, LengthM: 0.28, LocLevel: "level_001_lake"}
+	res := srv.settleCatchXP(ctx, uid, lighter, "worm_01")
+	if res.isRecord {
+		t.Fatal("642g 未超过已入护的 800g，不应记为个人纪录")
+	}
+	if got := u32Of(srv.buildSettle813(ctx, uid, lighter, res).Field(8).Val.Field(1).Num); got != 0 {
+		t.Fatalf("310.f1=%d, want 0", got)
+	}
+	heavier := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 4, WeightG: 900, LengthM: 0.35, LocLevel: "level_001_lake"}
+	res2 := srv.settleCatchXP(ctx, uid, heavier, "worm_01")
+	if !res2.isRecord {
+		t.Fatal("900g 超过已入护的 800g，应记为个人纪录")
+	}
+	if got := u32Of(srv.buildSettle813(ctx, uid, heavier, res2).Field(8).Val.Field(1).Num); got != 1 {
+		t.Fatalf("310.f1=%d, want 1", got)
+	}
+	if got := u32Of(srv.build813(ctx, uid, heavier, 900).Field(8).Val.Field(1).Num); got != 0 {
+		t.Fatalf("同重 310.f1=%d, want 0", got)
+	}
 }
 
 func ptrI64(v int64) *int64 { return &v }

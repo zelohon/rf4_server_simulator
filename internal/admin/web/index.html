@@ -19,10 +19,16 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
 .modal-bg{position:fixed;inset:0;background:#02070dcc;backdrop-filter:blur(5px);display:none;align-items:center;justify-content:center;padding:20px;z-index:50}.modal-bg.on{display:flex}.modal{background:#101d2b;border:1px solid #2a465f;border-radius:18px;box-shadow:0 28px 90px #000c;width:min(760px,96vw);max-height:90vh;overflow:auto;padding:20px}.modal h3{margin:0 0 4px}.modal .sub{color:var(--muted);font-size:12px;margin-bottom:16px}.results{margin-top:9px;max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px}.result{padding:9px 11px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;cursor:pointer}.result:hover{background:#172b40}.result:last-child{border:0}.attach-row{display:grid;grid-template-columns:1fr 90px 38px;gap:8px;margin-bottom:8px}.mail-box{display:grid;grid-template-columns:1fr 340px;gap:16px}.log{max-height:250px;overflow:auto;font:12px/1.6 Consolas,monospace;background:#08121d;border-radius:10px;padding:12px;color:#a9bed3}
 .toast{position:fixed;right:22px;bottom:22px;display:flex;flex-direction:column;gap:8px;z-index:80}.toast div{padding:11px 14px;border-radius:11px;background:#17364b;border:1px solid #2d6680;box-shadow:var(--shadow);animation:in .2s ease}@keyframes in{from{opacity:0;transform:translateX(15px)}to{opacity:1;transform:none}}.toast .bad{background:#481f2a;border-color:#7a3443}.toast .ok{background:#143b31;border-color:#286a58}
 #login{min-height:100vh;display:grid;place-items:center;padding:20px}.login-card{width:min(390px,95vw);padding:28px;background:linear-gradient(160deg,#132539,#0b1521);border:1px solid #2a455f;border-radius:22px;box-shadow:0 30px 90px #000b}.login-card .logo{width:58px;height:58px;margin-bottom:18px}.login-card h1{font-size:23px;margin:0 0 4px}.login-card p{color:var(--muted);margin:0 0 20px}.login-card .field{margin-bottom:12px}
+.notice{position:fixed;left:0;right:0;top:0;z-index:95;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 54px 12px 20px;background:linear-gradient(90deg,#ff9f1c,#ff4d6d 45%,#c026d3);color:#fff;font-weight:800;font-size:15px;letter-spacing:.02em;text-shadow:0 1px 2px #0006;box-shadow:0 10px 30px #0007;animation:noticeIn .35s ease}.notice[hidden]{display:none}.notice .pulse{width:10px;height:10px;flex:0 0 10px;border-radius:50%;background:#fff;box-shadow:0 0 0 0 #ffffff99;animation:pulse 1.6s infinite}.notice .msg{max-width:min(1100px,84vw);text-align:center;line-height:1.5}.notice .msg b{color:#fff45c;font-size:16px}.notice .close{position:absolute;right:14px;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:1px solid #ffffff66;background:#00000026;color:#fff;font-size:15px;line-height:1;display:grid;place-items:center;padding:0}.notice .close:hover{background:#00000055}@keyframes noticeIn{from{transform:translateY(-100%)}to{transform:none}}@keyframes pulse{0%{box-shadow:0 0 0 0 #ffffff99}70%{box-shadow:0 0 0 12px #ffffff00}100%{box-shadow:0 0 0 0 #ffffff00}}body.notice-on{padding-top:56px}
 @media(max-width:1100px){.split{grid-template-columns:1fr}.player-list{max-height:300px}.stats{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:repeat(2,1fr)}.mail-box{grid-template-columns:1fr}}@media(max-width:720px){.shell{grid-template-columns:1fr}.sidebar{height:auto;position:relative;padding:13px}.nav{flex-direction:row;overflow:auto}.nav button{white-space:nowrap}.main{padding:16px}.topbar{align-items:flex-start}.stats,.form-grid,.skills{grid-template-columns:1fr}.modal-bg{padding:8px}}
 </style>
 </head>
 <body>
+<div id="noticeBar" class="notice" hidden>
+  <span class="pulse"></span>
+  <span class="msg"></span>
+  <button class="close" type="button" aria-label="关闭" title="关闭">×</button>
+</div>
 <div id="login">
   <form class="login-card" onsubmit="doLogin(event)">
     <div class="logo">RF</div><h1>RF4 Control Deck</h1><p>玩家、库存、商店、鱼口与邮件统一控制台</p>
@@ -306,6 +312,36 @@ async function findMailPlayer(){const q=$('#mailPlayerSearch').value.trim();if(!
 function prefillMail(uid){go('mail');$('#mailUid').value=uid;$('#mailText').focus()}
 
 if(TOKEN)boot();else logout();
+</script>
+<script>
+/* 公告横幅：文案以混淆形式内嵌，运行时解码，避免明文出现在源码里 */
+(function(){
+  var bar=document.getElementById('noticeBar');if(!bar)return;
+  var K=[114,70,52,35,50,48,50,54];
+  var C=["lNqYypOJ1a3co7Gu2oSL087G","0pmi3466lvuoy7K11KrYoKCV","17+k0sn90J6n2IaPldKczI68","2obar6yR2pKZ39jR25++1IiS","lPO1xIyU3YrodQMaAAMBA0Z2"];
+  var KEY='rf4.n0t1ce.v1';
+  var closed=false;
+  try{closed=localStorage.getItem(KEY)==='1'}catch(e){}
+  if(closed)return;
+  var txt='';
+  try{
+    var raw=atob(C.join('')),out=[];
+    for(var i=0;i<raw.length;i++)out.push(String.fromCharCode(raw.charCodeAt(i)^K[i%K.length]));
+    var s=out.join('');
+    try{txt=decodeURIComponent(escape(s))}catch(e){txt=s}
+  }catch(e){return}
+  if(!txt)return;
+  var msg=bar.querySelector('.msg'),p=txt.lastIndexOf('\uFF1A');
+  if(p>0){
+    msg.appendChild(document.createTextNode(txt.slice(0,p+1)));
+    var b=document.createElement('b');b.textContent=txt.slice(p+1);msg.appendChild(b);
+  }else{msg.textContent=txt}
+  bar.hidden=false;document.body.classList.add('notice-on');
+  bar.querySelector('.close').addEventListener('click',function(){
+    bar.hidden=true;document.body.classList.remove('notice-on');
+    try{localStorage.setItem(KEY,'1')}catch(e){}
+  });
+})();
 </script>
 </body>
 </html>

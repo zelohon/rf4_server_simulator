@@ -145,7 +145,7 @@ func (s *Server) handleEnvelopePayload(sess *Session, payload []byte) {
 	ctx.ExpectResponse = expect
 	if traceCmds && !traceSkip[cmd] {
 		sess.log.Info("TRACE 收", "cmd", cmd, "expect", expect,
-			"len", len(env.Body), "hex", traceHexHead(env.Body, 160))
+			"len", len(env.Body), "hex", traceHexHead(env.Body, traceHexMax))
 	}
 
 	s.dispatchRequest(ctx)

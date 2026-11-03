@@ -27,7 +27,7 @@ type settleXpResult struct {
 	newLevel     int64 // grant 后等级
 	totalXp      int64 // grant 后累计经验
 	levelsGained int64 // 本次升级数（310.f5）
-	isRecord     bool  // 是否破纪录（310.f1；当前固定为 0）
+	isRecord     bool  // 是否破个人纪录（310.f1：1=是，0=否）
 	skillID      int64 // 310.f2 钓法大类（1 浮钓 / 2 纺车）
 	// 会员 + 欢乐时光加成（B 段）
 	appliedBonuses []uint32 // 生效的加成类型（4=会员 56=欢乐时光），供 310.f6 展示
@@ -285,6 +285,14 @@ func (s *Server) settleStatics(ctx context.Context, species string) [6]int64 {
 	return [6]int64{f0, f1, f2, f3, f4, f5}
 }
 
+// personalRecordFlag 把个人纪录写成 310.f1。协议样本里还有 3，含义未确认，不使用。
+func personalRecordFlag(isRecord bool) uint32 {
+	if isRecord {
+		return 1
+	}
+	return 0
+}
+
 // buildSettle813 构造 813 搏斗统计块：f8 是 310 经验块，f9 是 25 鱼条目。
 // 310.f5 保存本次升级数，310.f6 保存加成分解，813.f4 由第五项静态值随机缩放。
 func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r *settleXpResult) *proto.Value {
@@ -303,7 +311,7 @@ func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r
 	// f5=本次升级数，f6=加成分解列表。
 	obj310 := wiregen.MustMakeObj("kegeppimjbm", map[int]*proto.Value{
 		0: proto.U64(uint64(r.totalXP)),
-		1: proto.U32(0),
+		1: proto.U32(personalRecordFlag(r != nil && r.isRecord)),
 		2: proto.U32(uint32(r.skillID)),
 		3: proto.F32(0.2),
 		4: proto.Null(),

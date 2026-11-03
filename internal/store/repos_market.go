@@ -253,6 +253,31 @@ func (d *DB) ListWornItems(ctx context.Context, uid int64, threshold float64) ([
 	return out, rows.Err()
 }
 
+// ListRepairItems 返回修理面板所需的完整物品清单（全部随身物品，含满耐久）。
+//
+// 客户端修理页左侧展示的是“随身物品表”，点击任意一件都会在 21/1 的返回列表里
+// 按 GUID 查修理信息；只返回磨损件会让客户端查不到模型，得到空详情。
+// 结果按 durability 升序排列，磨损最重的排在前面。
+func (d *DB) ListRepairItems(ctx context.Context, uid int64) ([]*Item, error) {
+	rows, err := d.SQL.QueryContext(ctx,
+		`SELECT `+itemCols+` FROM item WHERE uid=? ORDER BY durability, slot`, uid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Item
+	for rows.Next() {
+		it := &Item{}
+		if err := rows.Scan(&it.GUID, &it.UID, &it.ItemID, &it.NumericID, &it.WireClass,
+			&it.TypeID, &it.Container, &it.Slot, &it.RigGUID, &it.Qty, &it.BuyPrice,
+			&it.FieldsJSON, &it.Durability, &it.Workmanship, &it.CreatedTS); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // SetItemDurability 将耐久限制在 0..1 后写入列。读取路径以该列为准重建字段，
 // 不需要同步修改 fields_json。
 func (d *DB) SetItemDurability(ctx context.Context, guid string, value float64) error {

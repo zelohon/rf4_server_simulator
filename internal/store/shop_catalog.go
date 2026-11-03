@@ -271,9 +271,17 @@ func (d *DB) effectiveShopShelf(ctx context.Context, storeID string) (*shopShelf
 			return nil, err
 		}
 	}
+	effective := applyShopOverrides(base, overrides)
+	// 补齐货架：历史抓取/内嵌模板缺的新商品（例如 2025 款）在客户端看来是
+	// “无库存”，这里按“同店内已有品类 +（品牌店）同品牌”补上，价格缺失时
+	// 用同类商品中位价估价。
+	effective, _, err = d.augmentShopShelf(ctx, def, effective)
+	if err != nil {
+		return nil, err
+	}
 	return &shopShelfResolution{
 		Base:         base,
-		Effective:    applyShopOverrides(base, overrides),
+		Effective:    effective,
 		Overrides:    overrides,
 		Definition:   def,
 		CatalogKnown: known,

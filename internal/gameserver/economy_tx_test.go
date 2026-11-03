@@ -370,6 +370,48 @@ func TestPlaceBuyoutAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestPaperMapBuyUnlocksEveryPlace(t *testing.T) {
+	srv, db := newEconomyTxTestServer(t)
+	uid := int64(2007)
+	if _, err := db.SQL.Exec(`INSERT INTO shop_item(store_id,item_id,silver,gold,stock) VALUES
+		('admin','papermap_torfynoe_01',100,0,10),
+		('admin','papermap_belaya_01',100,0,10)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.EnsureProfile(context.Background(), uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL.Exec(`UPDATE profile SET silver=1000 WHERE uid=?`, uid); err != nil {
+		t.Fatal(err)
+	}
+	buy := func(itemID, place string) {
+		t.Helper()
+		body, ok := hStoreBuy(false)(economyTestCtx(srv, uid, proto.Args524(
+			proto.StrVal("admin"), proto.StrVal(itemID), proto.U64(0))))
+		if !ok || len(body) == 0 || body[0] == 0x0F {
+			t.Fatalf("购买 %s 失败: ok=%v body=%x", itemID, ok, body)
+		}
+		var owned int
+		if err := db.SQL.QueryRow(
+			`SELECT COUNT(*) FROM place_access WHERE uid=? AND place=? AND kind='buyout'`,
+			uid, place).Scan(&owned); err != nil {
+			t.Fatal(err)
+		}
+		if owned != 1 {
+			t.Fatalf("%s 未解锁 %s", itemID, place)
+		}
+	}
+	buy("papermap_torfynoe_01", "level_004_torfyanoe_ozero")
+	buy("papermap_belaya_01", "level_010_belaya")
+	var silver int64
+	if err := db.SQL.QueryRow(`SELECT silver FROM profile WHERE uid=?`, uid).Scan(&silver); err != nil {
+		t.Fatal(err)
+	}
+	if silver != 800 {
+		t.Fatalf("两张地图应各扣 100，silver=%d", silver)
+	}
+}
+
 func TestMarketPriceUsesMapOverlay(t *testing.T) {
 	e := &store.KeepnetEntry{Species: "ruffe", WeightG: 1000, Cat: 1, TS: 1}
 	withoutMap := marketPriceCentsForMap(e, 1, "")

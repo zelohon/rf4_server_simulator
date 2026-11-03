@@ -53,7 +53,7 @@ type gearPhysicsSpec struct {
 	RodPowerKg       float64
 	LineStrengthKg   float64
 	LeaderStrengthKg float64
-	ReelDragKg       float64
+	ReelDragKg       float64 // 摩擦制动力，只供对照；断件计算不使用它
 	LineStretch      float64
 }
 
@@ -189,8 +189,9 @@ func rodTestG(def *store.ItemDef) (float64, float64) {
 func rodTaper(def *store.ItemDef) float64 { return itemDefF32(def, gearAttrTaper) }
 
 // gearBreakLimitKg 返回整副钓组最弱一环的拉力；0 表示没有可信物理数据。
+// 摩擦制动力是打滑力，拨到 29 档不应把齿轮当成断件。
 func gearBreakLimitKg(spec gearPhysicsSpec) float64 {
-	parts := []float64{spec.RodPowerKg, spec.LineStrengthKg, spec.LeaderStrengthKg, spec.ReelDragKg}
+	parts := []float64{spec.RodPowerKg, spec.LineStrengthKg, spec.LeaderStrengthKg}
 	limit := 0.0
 	for _, p := range parts {
 		if p <= 0 {
@@ -211,7 +212,6 @@ func gearWeakestPart(spec gearPhysicsSpec) string {
 		{"rod", spec.RodPowerKg},
 		{"line", spec.LineStrengthKg},
 		{"leader", spec.LeaderStrengthKg},
-		{"reel", spec.ReelDragKg},
 	}
 	name := ""
 	limit := 0.0
@@ -224,7 +224,7 @@ func gearWeakestPart(spec gearPhysicsSpec) string {
 	return name
 }
 
-// canLandGear 判断鱼能否拉上岸，并返回最弱断件（rod/line/leader/reel）。
+// canLandGear 判断鱼能否拉上岸，并返回最弱断件（rod/line/leader）。
 // pull = fish_weight_kg * k，默认 k 为 0.35。
 func canLandGear(spec gearPhysicsSpec, fishWeightKg, k float64) (bool, string) {
 	if fishWeightKg <= 0 {

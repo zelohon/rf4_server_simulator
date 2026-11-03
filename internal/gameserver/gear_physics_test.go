@@ -92,7 +92,8 @@ func TestGearWeightCapUsesWeakestLinkAndLineBuffer(t *testing.T) {
 	if math.Abs(buf-0.575) > 1e-9 {
 		t.Fatalf("line buffer=%f，期望 0.575", buf)
 	}
-	want := 6.4 * (1.0 / 0.35) / 0.575
+	// 摩擦 6.4kg 低于鱼线 10.5kg，但摩擦是打滑力，上限跟鱼线走。
+	want := 10.5 * (1.0 / 0.35) / 0.575
 	if got := gearWeightCapKg(spec); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("gear cap=%f，期望 %f", got, want)
 	}
@@ -162,9 +163,9 @@ func TestRigGearIDsReadsCurrentRodFieldsAndComponents(t *testing.T) {
 		t.Fatalf("rig gear IDs=%+v", ids)
 	}
 	capKg, _, weakest := srv.gearWeightCapForRig(ctx, uid, rodGUID)
-	wantCap := 6.4 * (1.0 / 0.35) / 0.575
-	if math.Abs(capKg-wantCap) > 1e-4 || weakest != "reel" {
-		t.Fatalf("当前钓组 cap=%f weakest=%q，期望 cap=%f weakest=reel", capKg, weakest, wantCap)
+	wantCap := 10.5 * (1.0 / 0.35) / 0.575
+	if math.Abs(capKg-wantCap) > 1e-4 || weakest != "line" {
+		t.Fatalf("当前钓组 cap=%f weakest=%q，期望 cap=%f weakest=line", capKg, weakest, wantCap)
 	}
 
 	// 实例耐久必须参与服务端最弱环计算：半耐久鱼线 10.5kg -> 5.25kg。
@@ -285,6 +286,23 @@ func TestFishingBonusUsesActualRigSkillCategory(t *testing.T) {
 	}
 	if lure := srv.fishingBonus(ctx, uid, 5); lure != neutralFishingSkillBonus() {
 		t.Fatalf("路亚 cat=2 不应消费底钓 cat=3 技能: %+v", lure)
+	}
+}
+
+func TestReelStrengthUsesGearRatioNotDrag(t *testing.T) {
+	def := &store.ItemDef{
+		Category: 6,
+		AttrsJSON: attrsJSON(t, map[string]any{
+			gearAttrDrag: map[string]any{gearAttrDragMax: f32Attr(35.4)},
+			gearAttrGear: map[string]any{gearAttrRatio: f32Attr(4)},
+		}),
+	}
+	got, ok := strengthBitsFor(def, 1)
+	if !ok || math.Abs(got-4) > 1e-3 {
+		t.Fatalf("渔轮强度=%v ok=%v，期望传动比 4，不能等于摩擦 35.4", got, ok)
+	}
+	if drag := reelDragMaxKg(def); math.Abs(drag-35.4) > 0.05 {
+		t.Fatalf("摩擦制动力=%f，期望 35.4", drag)
 	}
 }
 

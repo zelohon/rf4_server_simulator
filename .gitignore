@@ -30,4 +30,6 @@ internal/wiregen/testdata/corpus.jsonl.gz
 Thumbs.db
 il2csharp_full
 tools/*
-!tools/build_release.py
+!tools/*.ps1
+!tools/*.py
+!tools/genwire/

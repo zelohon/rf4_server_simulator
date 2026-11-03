@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -278,4 +280,53 @@ func NewLogintoken(userid int64) string {
 		strconv.FormatInt(userid, 10),
 		hex.EncodeToString(t[:]),
 	}, "|")
+}
+
+// ---- 局域网/Radmin 多账号：按来源 IP 分配 userid ----
+
+var (
+	ipUIDOnce sync.Once
+	ipUIDMu   sync.Mutex
+	ipUIDMap  = map[string]int64{}
+)
+
+func (s *LoginServer) useridForRemote(remote string) int64 {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	base := s.cfg.UseridStart
+	if base <= 0 {
+		base = 1000001
+	}
+	// 本机保持原固定 UID，避免现有存档换号。
+	if host == "" || host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return base
+	}
+	ipUIDOnce.Do(func() {
+		if b, err := os.ReadFile("gateway_ip_uids.json"); err == nil {
+			_ = json.Unmarshal(b, &ipUIDMap)
+		}
+		if ipUIDMap == nil {
+			ipUIDMap = map[string]int64{}
+		}
+	})
+	ipUIDMu.Lock()
+	defer ipUIDMu.Unlock()
+	if uid, ok := ipUIDMap[host]; ok && uid > 0 {
+		return uid
+	}
+	max := base
+	for _, v := range ipUIDMap {
+		if v > max {
+			max = v
+		}
+	}
+	uid := max + 1
+	ipUIDMap[host] = uid
+	if b, err := json.MarshalIndent(ipUIDMap, "", "  "); err == nil {
+		_ = os.WriteFile("gateway_ip_uids.json", b, 0o644)
+	}
+	s.log.Info("LAN 账号分配", "ip", host, "userid", uid)
+	return uid
 }

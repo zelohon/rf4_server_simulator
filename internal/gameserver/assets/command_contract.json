@@ -1956,12 +1956,8 @@
    ],
    "resp": {
     "kind": "dto",
-    "classes": [
-     "onobdmohahp"
-    ],
-    "type_ids": [
-     132
-    ]
+    "classes": [],
+    "type_ids": []
    }
   },
   "21/4": {
@@ -1972,12 +1968,8 @@
    "method": "okccjmnfola",
    "resp": {
     "kind": "dto",
-    "classes": [
-     "onobdmohahp"
-    ],
-    "type_ids": [
-     132
-    ]
+    "classes": [],
+    "type_ids": []
    }
   },
   "21/5": {

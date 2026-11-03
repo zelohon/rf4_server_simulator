@@ -178,7 +178,7 @@ func (s *Server) build813(ctx context.Context, uid int64, f *RolledFish, prevBes
 
 	obj310 := wiregen.MustMakeObj("kegeppimjbm", map[int]*proto.Value{
 		0: proto.U64(uint64(f.XP)), // 单鱼经验（不是累计）
-		1: proto.U32(0),
+		1: proto.U32(personalRecordFlag(prevBest <= 0 || f.WeightG > prevBest)),
 		2: proto.U32(uint32(stLastSkill(s, uid))),
 		3: proto.F32(0.2),
 		4: proto.Null(),

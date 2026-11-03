@@ -54,6 +54,8 @@ var categoryWireClass = map[int64]wireClassEntry{
 	37: {"gfkbfjgkjoh", 116},
 	39: {"bplepbfgpmk", 162},
 	40: {"dbojlbebaca", 143},
+	41: {"jceogpbfpjh", 163}, // 工坊工具；定义类型 12056 夹在票据实例 162 与露营灯 164 之间
+	42: {"nacllfpgomk", 142}, // 工坊材料，可堆叠；定义类型 12026 夹在拟饵 141 与地图 143 之间
 	44: {"fcdgfdomnjm", 160}, // Sbirolino
 	46: {"cilmgoaoofg", 120}, // 成品窝料
 	48: {"npnkhkicfkg", 613}, // 渔轮导线环
@@ -298,6 +300,13 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 					v  float64
 				}{{csWorkmanship, it.Workmanship}, {csDurability, it.Durability}} {
 					si := fieldIdxByCS(sub.Class, pair.cs)
+					// 刹车片耐久是零件自己的磨损数据（工坊修复/换件依赖它），
+					// 只在缺失（nil/0）时用母轮耐久初始化，已有值必须保留。
+					if pair.cs == csDurability && si >= 0 && si < len(sub.Fields) {
+						if f := sub.Fields[si]; f.Num != nil && proto.F32FromBits(uint32(*f.Num)) > 0 {
+							continue
+						}
+					}
 					if setWireFloat(sub.Fields, sub.Class, si, pair.v) {
 						changed = true
 					}
@@ -354,8 +363,16 @@ func (s *Server) canonicalizeNestedItemPhysicalFields(ctx context.Context, class
 		if setWireFloat(obj.Fields, obj.Class, fieldIdxByCS(obj.Class, csWorkmanship), workmanship) {
 			changed = true
 		}
-		if setWireFloat(obj.Fields, obj.Class, fieldIdxByCS(obj.Class, csDurability), durability) {
-			changed = true
+		// 子件耐久是零件自己的磨损数据（工坊修复/换件依赖它），
+		// 只在缺失（nil/0）时用母物品耐久初始化，已有值必须保留。
+		if si := fieldIdxByCS(obj.Class, csDurability); si >= 0 && si < len(obj.Fields) {
+			cur := 0.0
+			if f := obj.Fields[si]; f.Num != nil {
+				cur = float64(proto.F32FromBits(uint32(*f.Num)))
+			}
+			if cur <= 0 && setWireFloat(obj.Fields, obj.Class, si, durability) {
+				changed = true
+			}
 		}
 		ni := fieldIdxByCS(obj.Class, csNumericID)
 		if ni < 0 || ni >= len(obj.Fields) || obj.Fields[ni].Num == nil {
@@ -475,6 +492,9 @@ func (s *Server) rebuildRod(ctx context.Context, it *store.Item, obj *proto.Valu
 	if obj.Fields[5].Val == nil || obj.Fields[5].Val.Kind == proto.KindNull {
 		obj.Fields[5].Val = s.defaultRig153(ctx, it)
 	}
+	// 出厂部件必须同时出现在 f5 的零件列表里：客户端的工作坊/装配界面
+	// 都按 f5 的 gcfcdnfmnbh 逐行渲染，缺了它们零件行就是空的。
+	s.appendFactoryPartsToRig(ctx, obj)
 
 	// f16 Ticks now / f18 状态位 = 定义 | 2048
 	if idx := fieldIdxByCS("cnolibojkao", csCreated); idx >= 0 {
@@ -490,8 +510,61 @@ func (s *Server) rebuildRod(ctx context.Context, it *store.Item, obj *proto.Valu
 	return nil
 }
 
-// buildFactoryChild 出厂部件子实例（guid = md5(竿guid|槽名) 稳定派生）。
+// appendFactoryPartsToRig 把出厂部件（f0..f2 内嵌子对象）补进 f5 的零件列表。
 //
+// f5 的 field[2] 是 gcfcdnfmnbh 列表（品类、guid、附加值），客户端工作坊
+// 与装配界面都按它逐行渲染零件。只写 f0..f2 而不登记进 f5 时，零件行为空。
+// 已存在的 guid 不重复添加；非竿或没有 f5 时直接返回。
+func (s *Server) appendFactoryPartsToRig(ctx context.Context, obj *proto.Value) {
+	if obj == nil || obj.Kind != proto.KindObj || obj.FieldCount() <= 5 {
+		return
+	}
+	rig := obj.Fields[5].Val
+	if rig == nil || rig.Kind != proto.KindObj || rig.FieldCount() <= 2 {
+		return
+	}
+	arr := rig.Fields[2].Val
+	if arr == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, e := range arr.Items {
+		if e == nil || e.Kind != proto.KindObj || e.FieldCount() < 2 {
+			continue
+		}
+		if g := e.Fields[1].Hex; g != "" {
+			seen[g] = true
+		}
+	}
+	for i := 0; i < 3 && i < obj.FieldCount(); i++ {
+		child := obj.Fields[i].Val
+		if child == nil || child.Kind != proto.KindObj {
+			continue
+		}
+		gidx := fieldIdxByCS(child.Class, csGUID)
+		if gidx < 0 || gidx >= child.FieldCount() {
+			continue
+		}
+		g := child.Fields[gidx].Hex
+		if g == "" || seen[g] {
+			continue
+		}
+		var cat uint64
+		if nidx := fieldIdxByCS(child.Class, csNumericID); nidx >= 0 && nidx < child.FieldCount() {
+			if def, err := s.DB.GetItemDef(ctx, int64(u64Of(child.Fields[nidx].Num))); err == nil && def != nil {
+				cat = uint64(def.Category)
+			}
+		}
+		arr.Items = append(arr.Items, wiregen.MustMakeObj("gcfcdnfmnbh", map[int]*proto.Value{
+			0: proto.U32(uint32(cat)),
+			1: proto.Guid(g),
+			2: proto.U32(0),
+		}))
+		seen[g] = true
+	}
+}
+
+// buildFactoryChild 出厂部件子实例（guid = md5(竿guid|槽名) 稳定派生）。
 // 状态位使用竿定义中该槽配置的 hgaijieklek 基值。
 // 必须在 applyDefAttrs 之后写入，否则会被定义属性覆盖。
 func (s *Server) buildFactoryChild(ctx context.Context, rod *store.Item, sysID string, partIdx int) (*proto.Value, error) {
@@ -764,6 +837,85 @@ func NewItemGUID() string {
 func netTicksNow() int64 {
 	// 100ns ticks；必须保留亚秒，f22 依赖严格单调的版本戳。
 	return time.Now().UnixNano()/100 + 621_355_968_000_000_000
+}
+
+// reclassifyStoredItem 把误落成钓线类的物品改写成该类别自己的实例类。
+// 已经买进背包的工坊工具和材料靠这一步恢复图标，不必扔掉重买。
+// guid、容器、数量、耐久和工艺保持不变。类别已经对上，或不是钓线回退类时不改。
+func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *store.ItemDef) (bool, error) {
+	if it == nil || def == nil {
+		return false, nil
+	}
+	cls, ok := categoryWireClass[def.Category]
+	if !ok || (it.WireClass == cls.Class && it.TypeID == cls.TypeID) {
+		return false, nil
+	}
+	if it.WireClass != "" && it.WireClass != fallbackWireClass {
+		return false, nil
+	}
+	obj, err := wiregen.MakeObj(cls.Class, nil)
+	if err != nil {
+		return false, err
+	}
+	s.applyDefAttrs(def, cls.Class, obj)
+	setHex := func(cs, v string) {
+		if idx := fieldIdxByCS(cls.Class, cs); idx >= 0 {
+			obj.Fields[idx].Hex = v
+		}
+	}
+	setNum := func(cs string, v uint64) {
+		if idx := fieldIdxByCS(cls.Class, cs); idx >= 0 {
+			obj.Fields[idx].Num = ptrU64(v)
+		}
+	}
+	setHex(csGUID, it.GUID)
+	setNum(csNumericID, uint64(def.NumericID))
+	rowQty := it.Qty
+	if rowQty < 1 {
+		rowQty = 1
+	}
+	if countableCategories[def.Category] {
+		if idx := fieldIdxByCS(cls.Class, csQty); idx >= 0 {
+			obj.Fields[idx].Num = ptrU64(uint64(rowQty))
+		}
+	}
+	workmanship := it.Workmanship
+	if workmanship <= 0 {
+		workmanship = 1
+	}
+	durability := it.Durability
+	if durability <= 0 {
+		durability = 1
+	}
+	s.materializeInto(ctx, cls.Class, def, obj, it.GUID, workmanship, durability)
+	if idx := fieldIdxByCS(cls.Class, csCreated); idx >= 0 && u64Of(obj.Fields[idx].Num) == 0 {
+		obj.Fields[idx].Num = ptrU64(uint64(netTicksNow()))
+	}
+	if idx := fieldIdxByCS(cls.Class, csUpdated); idx >= 0 && u64Of(obj.Fields[idx].Num) == 0 {
+		obj.Fields[idx].Num = ptrU64(uint64(proto.WindowsFiletimeNow()))
+	}
+	if idx := fieldIdxByCS(cls.Class, csStateEnum); idx >= 0 {
+		st := u64Of(obj.Fields[idx].Num)
+		if defBits, ok := defAttrU64(def, "hgaijieklek"); ok {
+			st = defBits
+		}
+		obj.Fields[idx].Num = ptrU64(st)
+	}
+	it.WireClass = cls.Class
+	it.TypeID = cls.TypeID
+	it.Qty = rowQty
+	it.Workmanship = workmanship
+	it.Durability = durability
+	s.canonicalizeItemPhysicalFields(ctx, it, obj.Fields)
+	fieldsJSON, err := FieldsToJSON(obj.Fields)
+	if err != nil {
+		return false, err
+	}
+	it.FieldsJSON = fieldsJSON
+	if err := s.DB.UpdateItemWire(ctx, it.GUID, cls.Class, cls.TypeID, fieldsJSON, rowQty); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // CreateItem 按 itemID 创建新实例并入包，返回数据库行。

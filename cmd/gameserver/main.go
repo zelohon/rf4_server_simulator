@@ -67,6 +67,21 @@ func main() {
 		log.Error("物品物理状态修复失败", "err", err)
 		os.Exit(1)
 	}
+	if n, err := srv.BackfillRigProjections(ctx); err != nil {
+		log.Warn("装配投影回填失败", "rods", n, "err", err)
+	} else {
+		log.Info("装配投影回填完成", "rods", n)
+	}
+	if n, err := srv.RepairReelComponents(ctx); err != nil {
+		log.Warn("渔线轮零件重建失败", "reels", n, "err", err)
+	} else {
+		log.Info("渔线轮零件重建完成", "reels", n)
+	if n, path, err := srv.LoadCompatTable(); err != nil {
+		log.Info("工坊兼容表未加载", "err", err)
+	} else {
+		log.Info("工坊兼容表已加载", "entries", n, "path", path)
+	}
+	}
 
 	ln, err := net.Listen("tcp", cfg.Game.Tunnel.Addr)
 	if err != nil {

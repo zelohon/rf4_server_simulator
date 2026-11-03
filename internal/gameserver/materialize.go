@@ -206,25 +206,27 @@ func itoa(v int) string {
 	return string(buf[i:])
 }
 
-// strengthBitsFor 返回物品强度定义值。渔轮读取嵌套 mlfjkaoicdn.omghfmdfjpc，
-// 其他类型读取顶层 kngaaefkpka；实例强度等于定义值乘以耐久。
+// strengthBitsFor 返回物品强度。渔轮的齿轮强度是传动比 oiaplokhcii.dpgbopbanal
+// （官方观测 3.4..11.7），摩擦制动力 omghfmdfjpc 只写在刹车片子上，两者不能是同一个数。
+// 其他类型读取顶层 kngaaefkpka。实例强度等于定义值乘以耐久。
 func strengthBitsFor(def *store.ItemDef, durability float64) (float64, bool) {
+	if def != nil && def.Category == 6 {
+		ratio := reelGearRatio(def)
+		if ratio <= 0 {
+			return 0, false
+		}
+		return ratio * durability, true
+	}
 	attrs := defAttrs(def)
 	if attrs == nil {
 		return 0, false
 	}
-	var bits float64
-	if nested, ok := attrs["mlfjkaoicdn"].(map[string]any); ok && def != nil && def.Category == 6 {
-		if v, ok := nested["omghfmdfjpc"].(float64); ok {
-			bits = v
-		}
-	} else if v, ok := attrs["kngaaefkpka"].(float64); ok {
-		bits = v
-	} else {
+	v, ok := attrs["kngaaefkpka"].(float64)
+	if !ok {
 		return 0, false
 	}
 	// attrs 中的浮点使用 IEEE754 位模式整数。
-	strength := float64(proto.F32FromBits(uint32(bits))) * durability
+	strength := float64(proto.F32FromBits(uint32(v))) * durability
 	return strength, true
 }
 

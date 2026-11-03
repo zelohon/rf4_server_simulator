@@ -788,11 +788,10 @@ func hFishingFall(ctx *Ctx) ([]byte, bool) {
 }
 
 func hFishingPull(ctx *Ctx) ([]byte, bool) {
-	st := ctx.Sess.Srv.stateFor(ctx.Sess.Userid)
-	st.mu.Lock()
-	st.Hooked = true // 拉力读条同为刺中证据
-	st.mu.Unlock()
-	ctx.Sess.Push4_22Full()
+	// 14/9 fishing/pull：纺车杆的"抬杆"（右键）与"小刺"（Ctrl+右键）。
+	// 客户端在本地播放杆梢动作，这条命令是 fire-and-forget 通知，不需要回包。
+	// 先原样记录请求体，便于确认两种手势的参数差异。
+	ctx.Log.Info("14/9 抬杆/小刺", "len", len(ctx.Body), "hex", traceHexHead(ctx.Body, 96))
 	return nil, true
 }
 
@@ -949,7 +948,7 @@ func registerSessionHandlers(d *Dispatch) {
 	d.Register(14, 6, hFishingRelease)
 	d.Register(14, 7, hFishingStep)
 	d.Register(14, 8, hFishingLoad)
-	d.Register(14, 9, hFishingGen)
+	d.Register(14, 9, hFishingPull)
 	d.Register(14, 10, hFishingGen)
 	d.Register(14, 11, hFishingHooked)
 	d.Register(14, 12, hFishingLeft)

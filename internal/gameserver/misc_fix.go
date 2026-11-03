@@ -23,6 +23,8 @@ func init() {
 		d.Register(3, 21, hChangeRegion)
 		d.Register(3, 23, hVerifyEmail)
 		d.Register(24, 10, hSocialPublic)
+		d.Register(24, 2, hSocialCurrent)
+		d.Register(24, 3, hSocialCurrent)
 	})
 }
 
@@ -324,6 +326,40 @@ func buildChatEchoPush(loc, msg string, uid uint64, users uint32) *proto.Value {
 	return proto.Args524(msgObj, proto.StrVal(loc), proto.U32(users))
 }
 
+// hSocialCurrent 处理 24/3 social/current / 24/2 social/auto：
+// 返回当前公共聊天频道。客户端没有频道时聊天输入框不会发送 24/10。
+func hSocialCurrent(ctx *Ctx) ([]byte, bool) {
+	ch := sessChannel(ctx.Sess)
+	srv := ctx.Sess.Srv
+	srv.mu.Lock()
+	users := int64(0)
+	for _, sess := range srv.sessions {
+		if sess != nil && !sess.Closed() {
+			users++
+		}
+	}
+	srv.mu.Unlock()
+	if users < 1 {
+		users = 1
+	}
+	obj := wiregen.MustMakeObj("godhiicbgng", map[int]*proto.Value{
+		0: proto.StrVal(ch.Name),
+		1: proto.StrVal("公共频道"),
+		2: proto.StrVal(ch.Region),
+		3: proto.U32(uint32(users)),
+		4: proto.U32(0), // 0=Public
+		5: proto.Bool(false),
+		6: proto.Null(), // 成员列表懒加载
+		7: proto.U32(1),
+		8: proto.Bool(false),
+	})
+	body, err := proto.EncodeValue(obj, ctx.Sess.Table())
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
 // hSocialPublic 处理 24/10 公聊，命令本身不返回响应。
 //
 // 普通发言通过 24/27 回显，客户端只接受 27..31 的聊天推送，不能直接推送 24/10。
@@ -339,12 +375,28 @@ func hSocialPublic(ctx *Ctx) ([]byte, bool) {
 		return nil, true
 	}
 	ch := sessChannel(ctx.Sess)
-	loc := fmt.Sprintf("%s[%s]", ch.Name, ch.Region) // 频道显示名
+	// 24/27 args[1] 必须与 24/3 godhiicbgng.f0 完全一致；带 [CN] 会被客户端当作别的频道丢弃。
+	loc := ch.Name
 	users := ch.Users
 	if users < 1 {
 		users = 1
 	}
-	ctx.Sess.Push(24, 27, buildChatEchoPush(loc, msg, uint64(ctx.Sess.Userid), uint32(users)))
+	// 公聊广播给所有在线会话；只回显发送者会导致多人频道互相看不到。
+	srv := ctx.Sess.Srv
+	srv.mu.Lock()
+	peers := make([]*Session, 0, len(srv.sessions))
+	for _, sess := range srv.sessions {
+		if sess != nil && !sess.Closed() {
+			peers = append(peers, sess)
+		}
+	}
+	srv.mu.Unlock()
+	if int64(len(peers)) > users {
+		users = int64(len(peers))
+	}
+	for _, sess := range peers {
+		sess.Push(24, 27, buildChatEchoPush(loc, msg, uint64(ctx.Sess.Userid), uint32(users)))
+	}
 	return nil, true // fire-and-forget，不返回响应
 }
 

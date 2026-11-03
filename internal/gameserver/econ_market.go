@@ -2,11 +2,14 @@ package gameserver
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,8 +34,8 @@ func registerEconMarket(d *Dispatch) {
 	d.Register(20, 4, hMarketSellOffer)
 	d.Register(21, 1, hWorkshopList)
 	d.Register(21, 2, hWorkshopDiag)
-	d.Register(21, 3, hWorkshopRepair(false))
-	d.Register(21, 4, hWorkshopRepair(true))
+	d.Register(21, 3, hWorkshopOrder) // 官方语义：订购/更换零件（含修理）
+	d.Register(21, 4, hWorkshopOrder) // 官方金币通道同样是换件结构
 	d.Register(17, 12, hRodSetDepth)
 	d.Register(17, 13, hRodSetClip)
 }
@@ -746,27 +749,37 @@ func repairCost(slots int, useGold bool, wear, mapMult float64) int64 {
 	return int64(math.Round(float64(repairBaseCents+repairPerSlotCents*n) * factor * mapMult))
 }
 
-// hWorkshopList 处理 21/1，返回耐久低于 1.0 的可修物品列表。
+// hWorkshopList 处理 21/1，返回修理面板所需的物品清单。
+//
+// 必须覆盖玩家的全部随身物品：客户端修理页选中的物品要在本响应里按 GUID 查
+// 修理信息，查不到就拿不到模型（详情空白）。满耐久物品同样返回，磨损记 0。
 func hWorkshopList(ctx *Ctx) ([]byte, bool) {
 	srv := ctx.Sess.Srv
 	if !srv.requireDB(ctx) {
 		return nil, false
 	}
 	cctx := ctx.Sess.pushCtx()
-	rows, err := srv.DB.ListWornItems(cctx, ctx.Sess.Userid, 1.0)
+	rows, err := srv.DB.ListRepairItems(cctx, ctx.Sess.Userid)
 	if err != nil {
 		rows = nil
 	}
 	out := proto.Args(proto.S("144"))
 	for _, r := range rows {
-		wear := 1.0 - r.Durability
-		durInt := int64(math.Round(r.Durability * 100))
-		slots := workshopSlots(cctx, srv, r.GUID)
+		parts := srv.repairPartsOf(cctx, r)
+		slots := make([]uint32, 0, len(parts))
+		for _, p := range parts {
+			slots = append(slots, p.Cat)
+		}
+		// f1 是完好度（1.0=全新）：客户端实测值为 0.9999x~1.0，不是磨损百分比，
+		// 发 1-durability 会把满耐久物品报成 0% 完好度，修理报价随之算错。
+		// f2 是可修档位（客户端实测 4/5 量级），这里取可修零件数。
+		condition := r.Durability
+		grade := int64(len(parts))
 		out.Items = append(out.Items, wiregen.MustMakeObj("ookkpknacja", map[int]*proto.Value{
 			0: proto.Guid(r.GUID),
-			1: proto.U32(proto.F32Bits(float32(wear))),
-			2: proto.U32(uint32(durInt)),
-			3: proto.TypedU32Arr("17", slots),
+			1: proto.U32(proto.F32Bits(float32(condition))),
+			2: proto.U32(uint32(grade)),
+			3: proto.U32Arr(slots),
 		}))
 	}
 	body, err := proto.EncodeValue(out, ctx.Sess.Table())
@@ -776,17 +789,488 @@ func hWorkshopList(ctx *Ctx) ([]byte, bool) {
 	return body, true
 }
 
-// workshopSlots 返回物品的可修槽位号；响应字段 f3 使用 code 为 17 的 typed_u32arr。
-func workshopSlots(ctx context.Context, srv *Server, guid string) []uint32 {
-	comps, err := srv.DB.ListRigComponents(ctx, guid)
+// repairPart 是修理面板要展示的一个可修零件。
+type repairPart struct {
+	GUID string
+	NID  uint32  // 零件定义 numeric_id（内嵌子件，item 表里没有行）
+	Cat  uint32  // oinpmjophkh 物品品类（客户端按类别渲染零件行）
+	Cond float64 // 完好度 0..1，1=全新；只影响报价，不影响是否展示
+}
+
+// repairPartsOf 从物品树里收集可修零件：
+//   - f0..f2 出厂部件（竿柄/导环等，内嵌子对象，带自己的 guid 和耐久）；
+//   - f3 挂线、f4 挂轮（存的是子件 guid）；
+//   - f5 装配列表（gcfcdnfmnbh：品类 + guid + 附加值）。
+//
+// 修理面板的零件行和报价都基于这份清单；只查 rig_component 派生表会因为
+// 历史数据未回填而永远为空。
+func (s *Server) repairPartsOf(ctx context.Context, it *store.Item) []repairPart {
+	if it == nil {
+		return nil
+	}
+	fields, err := FieldsFromJSON(it.FieldsJSON)
 	if err != nil {
 		return nil
 	}
-	var out []uint32
-	for _, c := range comps {
-		if c.GUID != "" {
-			out = append(out, uint32(c.Slot))
+	var out []repairPart
+	seen := map[string]bool{}
+	add := func(guid string, nid, cat uint32, cond float64) {
+		if guid == "" || seen[guid] {
+			return
 		}
+		seen[guid] = true
+		out = append(out, repairPart{GUID: guid, NID: nid, Cat: cat, Cond: cond})
+	}
+	catOf := func(numericID uint32) uint32 {
+		if def, derr := s.DB.GetItemDef(ctx, int64(numericID)); derr == nil && def != nil {
+			return uint32(def.Category)
+		}
+		return 0
+	}
+	condOf := func(v *proto.Value) float64 {
+		if v == nil || v.Kind != proto.KindObj {
+			return 1.0
+		}
+		// 子件耐久字段按类名查（竿件在下标 15，渔轮件在下标 6），值以 f32 位形存放。
+		if idx := fieldIdxByCS(v.Class, csDurability); idx >= 0 && idx < v.FieldCount() {
+			if f := v.Field(idx); f.Num != nil {
+				return float64(math.Float32frombits(f.U32()))
+			}
+		}
+		return 1.0
+	}
+	// 遍历所有 VAL 对象槽：竿的出厂部件在 f0~f2，渔线轮的组件在 f2~f14
+	// （线杯/轴承/摇把/油/摩擦片/曳力片…），统一按“有 guid 的子件”收集。
+	for i := 0; i < len(fields); i++ {
+		if fields[i].Op != "VAL" {
+			continue
+		}
+		child := fields[i].Val
+		if child == nil || child.Kind != proto.KindObj {
+			continue
+		}
+		gidx := fieldIdxByCS(child.Class, csGUID)
+		if gidx < 0 || gidx >= child.FieldCount() {
+			continue
+		}
+		g := child.Fields[gidx].Hex
+		if g == "" {
+			continue
+		}
+		var nid, cat uint32
+		if nidx := fieldIdxByCS(child.Class, csNumericID); nidx >= 0 && nidx < child.FieldCount() {
+			nid = uint32(u64Of(child.Fields[nidx].Num))
+			cat = catOf(nid)
+		}
+		// 只收零件本身：摇柄(34) 不进工坊列表；线(11)/渔轮(6)/拟饵等
+		// 属于已装配的渔具，不是这根杆子的零件，一律排除。
+		if !workshopPartCategories[cat] {
+			continue
+		}
+		add(g, nid, cat, condOf(child))
+	}
+	return out
+}
+
+// ---- 工坊零件定价 / 替代件 / 订购 ----
+
+// 零件价格缓存：item_price 是全局价目表，零件本身通常没有单独定价。
+var partPriceOnce sync.Once
+var partPriceByItemID map[string][2]int64
+
+// 零件没有独立价目时按品类给基准价，数值参考官方抓包样本
+// （轴承 845/8、摩擦片 754/7、齿轮 296/5、竿坯 1200/12 …）。
+// workshopPartCategories 允许出现在工坊零件列表里的品类。
+// 4 竿柄 / 5 导环 / 7 轴承 / 8 线杯 / 9 摩擦片 / 10 轮油 /
+// 36 竿坯 / 52 齿轮 / 63 电机 / 81 引擎
+var workshopPartCategories = map[uint32]bool{
+	4: true, 5: true, 7: true, 8: true, 9: true, 10: true,
+	36: true, 52: true, 63: true, 81: true,
+}
+
+// noReplaceCategories 不允许更换型号、只能修复的零件品类。
+var noReplaceCategories = map[int64]bool{5: true, 7: true, 8: true, 36: true}
+
+var partBasePrice = map[int64][2]int64{
+	4:  {600, 6},   // 竿柄
+	5:  {400, 4},   // 导环
+	7:  {845, 8},   // 轴承
+	8:  {900, 9},   // 线杯
+	9:  {754, 7},   // 摩擦片
+	10: {50, 1},    // 轮油
+	34: {300, 3},   // 摇把
+	36: {1200, 12}, // 竿坯
+	52: {296, 5},   // 齿轮
+}
+
+// partDefCache 缓存 item_id -> 定义，供按属性定价使用。
+var partDefMu sync.Mutex
+var partDefCache = map[string]*store.ItemDef{}
+
+func (s *Server) defByItemID(ctx context.Context, itemID string) *store.ItemDef {
+	partDefMu.Lock()
+	d, ok := partDefCache[itemID]
+	partDefMu.Unlock()
+	if ok {
+		return d
+	}
+	def, err := s.DB.GetItemDefByItemID(ctx, itemID)
+	if err != nil {
+		def = nil
+	}
+	partDefMu.Lock()
+	partDefCache[itemID] = def
+	partDefMu.Unlock()
+	return def
+}
+
+// partPrice 按零件属性推导价格（item_price 里没有零件价）。
+//
+// 依据官方样本标定：摩擦片 ≈ 制动力(kg)×140、齿轮 ≈ 传动比×48、
+// 轴承 ≈ 品质×10、线杯 ≈ 容量×12；金币按银币/110 取整。
+func (s *Server) partPrice(ctx context.Context, itemID string, category int64) (int64, int64) {
+	partPriceOnce.Do(func() {
+		partPriceByItemID = map[string][2]int64{}
+		rows, err := s.DB.SQL.QueryContext(context.Background(),
+			`SELECT item_id, COALESCE(silver,0), COALESCE(gold,0) FROM item_price`)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var silver, gold int64
+			if err := rows.Scan(&id, &silver, &gold); err != nil {
+				continue
+			}
+			partPriceByItemID[id] = [2]int64{silver, gold}
+		}
+	})
+	if p, ok := partPriceByItemID[itemID]; ok && (p[0] > 0 || p[1] > 0) {
+		return p[0], p[1]
+	}
+	def := s.defByItemID(ctx, itemID)
+	var silver float64
+	if def != nil {
+		attrs := defAttrs(def)
+		num := func(k string) (float64, bool) {
+			if attrs == nil {
+				return 0, false
+			}
+			switch v := attrs[k].(type) {
+			case float64:
+				return v, true
+			case int64:
+				return float64(v), true
+			}
+			return 0, false
+		}
+		switch def.Category {
+		case 9: // 摩擦片：制动力，价格按平方放大（26 × kg²，5.4kg≈758 银）
+			if b, ok := num("omghfmdfjpc"); ok {
+				d := float64(proto.F32FromBits(uint32(b)))
+				silver = 26 * d * d
+			}
+		case 7: // 轴承：品质百分比
+			if q, ok := num("obifdihmcfn"); ok {
+				silver = q * 10
+			}
+		case 8: // 线杯：容量
+			if c, ok := num("boejfeemeej"); ok {
+				silver = c * 12
+			}
+		case 52: // 齿轮：传动比
+			if b, ok := num("dpgbopbanal"); ok {
+				silver = float64(proto.F32FromBits(uint32(b))) * 480
+			}
+		case 10: // 润滑油
+			silver = 50
+		}
+	}
+	if silver <= 0 {
+		if p, ok := partBasePrice[category]; ok {
+			silver = float64(p[0])
+		} else {
+			silver = 500
+		}
+	}
+	return int64(math.Round(silver)), int64(math.Round(silver / 110))
+}
+
+func priceObj(silver, gold int64) *proto.Value {
+	return wiregen.MustMakeObj("oifghenlghh", map[int]*proto.Value{
+		0: proto.U64(uint64(silver)),
+		1: proto.U64(uint64(gold)),
+	})
+}
+
+// partAlternatives 构造某零件的可替换件工单列表（官方 21/2 的 f5，hpopgbjohpk[]）。
+//
+// 官方每条工单：{新件 systemID, 旧件折抵价, 新件价格, 工时(分钟)}。
+// 兼容件来源：同品类（官方 UI 上"有 N 种可选的变体"就是这里的条目数）。
+// compatParts 读取 data/compat_parts.json 的精确兼容表：
+// {"轮子systemID": {"9": ["reef_fb_cnvEG70", ...]}}
+// 表里有的按表发；没有的回退到"同命名族"近似。
+var compatOnce sync.Once
+var compatTable map[string]map[string][]string
+
+// compatTablePath 依次尝试多个位置，避免服务端工作目录不同导致读不到。
+func compatTablePath() (string, bool) {
+	var cands []string
+	if p := os.Getenv("RF4_COMPAT_FILE"); p != "" {
+		cands = append(cands, p)
+	}
+	cands = append(cands, "data/compat_parts.json", "server_data/compat_parts.json")
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		cands = append(cands,
+			filepath.Join(dir, "data", "compat_parts.json"),
+			filepath.Join(dir, "..", "data", "compat_parts.json"))
+	}
+	for _, p := range cands {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// LoadCompatTable 启动时加载精确兼容表，返回条目数与来源路径。
+func (s *Server) LoadCompatTable() (int, string, error) {
+	compatOnce.Do(func() {})
+	compatTable = map[string]map[string][]string{}
+	path, ok := compatTablePath()
+	if !ok {
+		return 0, "", os.ErrNotExist
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, path, err
+	}
+	if err := json.Unmarshal(raw, &compatTable); err != nil {
+		return 0, path, err
+	}
+	n := 0
+	for _, byCat := range compatTable {
+		n += len(byCat)
+	}
+	return n, path, nil
+}
+
+// compatFor 返回该轮子该品类的替代型号。
+// found=true 表示表里有这台轮子（以表为准，缺的品类即"没有替代品"）；
+// found=false 才回退到命名前缀近似。
+func (s *Server) compatFor(reelItemID, category string) ([]string, bool) {
+	compatOnce.Do(func() {
+		if compatTable == nil {
+			compatTable = map[string]map[string][]string{}
+		}
+	})
+	byCat, ok := compatTable[reelItemID]
+	if !ok {
+		return nil, false
+	}
+	return byCat[category], true
+}
+
+func (s *Server) partAlternatives(ctx context.Context, reelItemID string, part repairPart) []*proto.Value {
+	nid := int64(part.NID)
+	if nid == 0 {
+		if row, err := s.DB.GetItemByGUID(ctx, part.GUID); err == nil && row != nil {
+			nid = row.NumericID
+		}
+	}
+	if nid == 0 {
+		return nil
+	}
+	def, derr := s.DB.GetItemDef(ctx, nid)
+	if derr != nil || def == nil || def.ItemID == "" {
+		return nil
+	}
+	out := make([]*proto.Value, 0, 32)
+	seen := map[string]bool{}
+	// 替代品数量上限：摩擦片 3 个，其它品类 4 个（不含当前零件自身那条）。
+	maxAlts := 4
+	if def.Category == 9 {
+		maxAlts = 3
+	}
+	addJob := func(itemID string) {
+		if itemID == "" || seen[itemID] {
+			return
+		}
+		if len(out) >= maxAlts+1 {
+			return
+		}
+		seen[itemID] = true
+		silver, gold := s.partPrice(ctx, itemID, def.Category)
+		comp := wiregen.MustMakeObj("oifghenlghh", map[int]*proto.Value{
+			0: proto.U64(uint64(silver / 10)),
+			1: proto.U64(uint64(gold / 10)),
+		})
+		price := wiregen.MustMakeObj("oifghenlghh", map[int]*proto.Value{
+			0: proto.U64(uint64(silver)),
+			1: proto.U64(uint64(gold)),
+		})
+		out = append(out, wiregen.MustMakeObj("hpopgbjohpk", map[int]*proto.Value{
+			0: proto.StrVal(itemID),
+			1: comp,
+			2: price,
+			3: proto.U32(2),
+		}))
+	}
+	addJob(def.ItemID)
+	// 线轴(8)/轴承(7)/杆坯(36) 只允许修复，不提供替代型号。
+	if noReplaceCategories[def.Category] {
+		return out
+	}
+	if ids, found := s.compatFor(reelItemID, strconv.FormatInt(def.Category, 10)); found {
+		for _, id := range ids {
+			addJob(id)
+		}
+		return out
+	}
+	// 回退：同品类 + 同命名族（取到最后一个 -/_ 的前缀）。
+	prefix := def.ItemID
+	if k := strings.LastIndexAny(prefix, "-_"); k >= 0 {
+		prefix = prefix[:k+1]
+	} else {
+		prefix = ""
+	}
+	if prefix != "" {
+		rows, qerr := s.DB.SQL.QueryContext(ctx,
+			`SELECT item_id FROM item_def WHERE category=? AND item_id LIKE ? ORDER BY numeric_id LIMIT 32`,
+			def.Category, prefix+"%")
+		if qerr == nil {
+			// 先把 id 收完再处理：addJob 里还会查定义/价格，
+			// 在结果集未关闭时复用同一连接会死锁。
+			var cands []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					continue
+				}
+				cands = append(cands, id)
+			}
+			rows.Close()
+			for _, id := range cands {
+				addJob(id)
+			}
+		}
+	}
+	return out
+}
+// childCategory 返回子件实例定义里的品类（oinpmjophkh），取不到返回 -1。
+func (s *Server) childCategory(ctx context.Context, v *proto.Value) int64 {
+	if v == nil || v.Kind != proto.KindObj {
+		return -1
+	}
+	nidx := fieldIdxByCS(v.Class, csNumericID)
+	if nidx < 0 || nidx >= v.FieldCount() {
+		return -1
+	}
+	n := u64Of(v.Fields[nidx].Num)
+	if def, err := s.DB.GetItemDef(ctx, int64(n)); err == nil && def != nil {
+		return def.Category
+	}
+	return -1
+}
+
+// childSystemID 返回子件定义里的 systemID（item_id），取不到返回空串。
+func (s *Server) childSystemID(ctx context.Context, v *proto.Value) string {
+	if v == nil || v.Kind != proto.KindObj {
+		return ""
+	}
+	nidx := fieldIdxByCS(v.Class, csNumericID)
+	if nidx < 0 || nidx >= v.FieldCount() {
+		return ""
+	}
+	n := u64Of(v.Fields[nidx].Num)
+	if def, err := s.DB.GetItemDef(ctx, int64(n)); err == nil && def != nil {
+		return def.ItemID
+	}
+	return ""
+}
+
+// buildPartInstance 按 systemID 构造一个装配子件实例（guid 由宿主 guid + key 稳定派生）。
+// 与 buildFactoryChild 同源，但不带"竿坯 2048 出厂位"，用于工坊换件。
+func (s *Server) buildPartInstance(ctx context.Context, host *store.Item, sysID, key string) (*proto.Value, error) {
+	def, err := s.DB.GetItemDefByItemID(ctx, sysID)
+	if err != nil || def == nil {
+		return nil, err
+	}
+	cls, ok := categoryWireClass[def.Category]
+	if !ok {
+		cls = struct {
+			Class  string
+			TypeID int64
+		}{fallbackWireClass, fallbackTypeID}
+	}
+	sum := md5.Sum([]byte(host.GUID + "|" + key))
+	childGUID := fmt.Sprintf("%x", sum)
+	obj, err := wiregen.MakeObj(cls.Class, nil)
+	if err != nil {
+		return nil, err
+	}
+	setGUID := func() {
+		if idx := fieldIdxByCS(cls.Class, csGUID); idx >= 0 {
+			obj.Fields[idx].Hex = childGUID
+		} else if fieldOpAt(cls.Class, 0) == "GUID16" {
+			obj.Fields[0].Hex = childGUID
+		}
+	}
+	setNum := func(cs string, v uint64) {
+		if idx := fieldIdxByCS(cls.Class, cs); idx >= 0 {
+			obj.Fields[idx].Num = ptrU64(v)
+		}
+	}
+	setFloat := func(cs string, v float64) {
+		idx := fieldIdxByCS(cls.Class, cs)
+		if idx < 0 {
+			return
+		}
+		if fieldIsFloat(cls.Class, idx) {
+			obj.Fields[idx].Float = v
+			return
+		}
+		if fieldOpAt(cls.Class, idx) == "U32" {
+			obj.Fields[idx].Num = ptrU64(uint64(math.Float32bits(float32(v))))
+		}
+	}
+	setGUID()
+	setNum(csNumericID, uint64(def.NumericID))
+	setNum(csSlotEnum, 4)
+	s.applyDefAttrs(def, cls.Class, obj)
+	base := u64Of(firstNonNil(obj.Fields, fieldIdxByCS(cls.Class, csStateEnum)).Num)
+	if base == 0 {
+		if defBits, ok := defAttrU64(def, "hgaijieklek"); ok {
+			base = defBits
+		}
+	}
+	setFloat(csWorkmanship, host.Workmanship)
+	setFloat(csDurability, host.Durability)
+	if idx := fieldIdxByCS(cls.Class, csStateEnum); idx >= 0 {
+		obj.Fields[idx].Num = ptrU64(base)
+	}
+	if idx := fieldIdxByCS(cls.Class, csParent); idx >= 0 {
+		obj.Fields[idx].Hex = host.GUID
+	}
+	return obj, nil
+}
+
+// workshopSlots 返回物品可修零件的品类列表。
+//
+// 响应字段 f3 在客户端是 oinpmjophkh[]（普通 u32 数组，marker 0x05）；
+// 若改成 typed_u32arr（0x07 带类型名）会解码成 kkeibjcmjnl，
+// 客户端强转 oinpmjophkh[] 时抛 InvalidCastException，整行作废。
+func workshopSlots(ctx context.Context, srv *Server, guid string) []uint32 {
+	row, err := srv.DB.GetItemByGUID(ctx, guid)
+	if err != nil || row == nil {
+		return nil
+	}
+	parts := srv.repairPartsOf(ctx, row)
+	out := make([]uint32, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, p.Cat)
 	}
 	return out
 }
@@ -806,25 +1290,21 @@ func hWorkshopDiag(ctx *Ctx) ([]byte, bool) {
 	if guid == "" {
 		guid = "00000000000000000000000000000000"
 	}
-	comps := proto.Args(proto.S("61"))
-	if rc, err := srv.DB.ListRigComponents(cctx, guid); err == nil {
-		for _, c := range rc {
-			if c.GUID == "" {
-				continue
-			}
-			dur := 1.0
-			if row, rerr := srv.DB.GetItemByGUID(cctx, c.GUID); rerr == nil && row != nil {
-				dur = row.Durability
-			}
-			depreciation := int64(math.Round(100.0 * (1.0 - dur)))
-			comps.Items = append(comps.Items, wiregen.MustMakeObj("gcfcdnfmnbh", map[int]*proto.Value{
-				0: proto.U32(uint32(c.Slot)),
-				1: proto.Guid(c.GUID),
-				2: proto.U32(uint32(depreciation)),
+	comps := proto.Args(proto.S("143")) // 元素类 hlopebmchhp(poolccanfhd, type_id 504) 的 args code
+	if row, rerr := srv.DB.GetItemByGUID(cctx, guid); rerr == nil && row != nil {
+		for _, p := range srv.repairPartsOf(cctx, row) {
+			// f3 = 该零件的修理报价（按磨损计价，完好度 1.0 → 0）
+			repairSilver := int64(math.Round(math.Max(0, 1-p.Cond) * 500))
+			comps.Items = append(comps.Items, wiregen.MustMakeObj("hlopebmchhp", map[int]*proto.Value{
+				0: proto.Guid(p.GUID),
+				1: proto.U32(proto.F32Bits(float32(p.Cond))),
+				2: proto.U32(4), // 官方固定 4
+				3: priceObj(repairSilver, 0),
+				4: proto.U32(0),
+				// f5 = 可更换件工单列表（hpopgbjohpk[]），客户端据此显示
+				// "选择替代品（有 N 种可选的变体）"。
+				5: proto.Args(proto.S("146"), srv.partAlternatives(cctx, row.ItemID, p)...),
 			}))
-		}
-		if len(comps.Items) > 0 {
-			comps = proto.Args(proto.S("81"), comps.Items...)
 		}
 	}
 	obj := wiregen.MustMakeObj("mgjeoebmghh", map[int]*proto.Value{
@@ -836,6 +1316,165 @@ func hWorkshopDiag(ctx *Ctx) ([]byte, bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+// partOrder 是 21/3 请求里的一个换件条目。
+type partOrder struct {
+	Cat   uint32
+	SysID string
+}
+
+// hWorkshopOrder 处理 21/3：按客户端提交的条目更换零件、扣费并返回更新后的物品树。
+//
+// 官方请求结构（抓包确认）：
+//
+//	args(524) [ workshopID,
+//	            nfmkdcbnkhp { itemGUID,
+//	                          args(503)[ {BYTE 品类, STR 新件 systemID} ... ],
+//	                          是否金币, 客户端报价 } ]
+func hWorkshopOrder(ctx *Ctx) ([]byte, bool) {
+	srv := ctx.Sess.Srv
+	if !srv.requireDB(ctx) {
+		return nil, false
+	}
+	cctx := ctx.Sess.pushCtx()
+	tree := ctx.Tree
+	if tree == nil || tree.Kind != proto.KindArgs || len(tree.Items) < 2 {
+		return nil, false
+	}
+	body := tree.Items[1]
+	if body == nil || body.Kind != proto.KindObj || body.FieldCount() < 2 {
+		return nil, false
+	}
+	gf := body.Field(0)
+	itemGUID := gf.GuidHex()
+	if itemGUID == "" {
+		return nil, false
+	}
+	var orders []partOrder
+	if lf := body.Field(1); lf.Val != nil && lf.Val.Kind == proto.KindArgs {
+		for _, it := range lf.Val.Items {
+			if it == nil || it.Kind != proto.KindObj || it.FieldCount() < 2 {
+				continue
+			}
+			cf := it.Field(0)
+			sf := it.Field(1)
+			if sf.Str == nil || *sf.Str == "" {
+				continue
+			}
+			orders = append(orders, partOrder{Cat: cf.U32(), SysID: *sf.Str})
+		}
+	}
+	if len(orders) == 0 {
+		return nil, false
+	}
+	useGold := false
+	if of := body.Field(2); of.Num != nil {
+		useGold = of.U32() != 0
+	}
+	clientCost := int64(0)
+	if cf := body.Field(3); cf.Num != nil {
+		clientCost = int64(cf.U64())
+	}
+
+	row, err := srv.DB.GetItemByGUID(cctx, itemGUID)
+	if err != nil || row == nil || row.UID != ctx.Sess.Userid {
+		return nil, false
+	}
+	fields, ferr := FieldsFromJSON(row.FieldsJSON)
+	if ferr != nil {
+		return nil, false
+	}
+
+	silver, gold := int64(0), int64(0)
+	changed := false
+	for _, o := range orders {
+		idx := -1
+		for i := range fields {
+			if fields[i].Op != "VAL" || fields[i].Val == nil || fields[i].Val.Kind != proto.KindObj {
+				continue
+			}
+			if srv.childCategory(cctx, fields[i].Val) == int64(o.Cat) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		// 同型号 = 修理（恢复耐久，按磨损计价）；不同型号 = 更换。
+		if installed := srv.childSystemID(cctx, fields[idx].Val); installed != "" &&
+			strings.EqualFold(installed, o.SysID) {
+			ch := fields[idx].Val
+			if didx := fieldIdxByCS(ch.Class, csDurability); didx >= 0 && didx < ch.FieldCount() {
+				old := float64(math.Float32frombits(ch.Fields[didx].U32()))
+				ch.Fields[didx].Num = ptrU64(uint64(math.Float32bits(1.0)))
+				silver += int64(math.Round(math.Max(0, 1-old) * 500))
+			}
+			changed = true
+			continue
+		}
+		def, derr := srv.DB.GetItemDefByItemID(cctx, o.SysID)
+		if derr != nil || def == nil {
+			continue
+		}
+		child, cerr := srv.buildPartInstance(cctx, row, o.SysID, fmt.Sprintf("part-%d", idx))
+		if cerr != nil || child == nil {
+			continue
+		}
+		fields[idx].Val = child
+		ps, pg := srv.partPrice(cctx, o.SysID, def.Category)
+		silver += ps
+		gold += pg
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	costSilver, costGold := silver, gold
+	if clientCost > 0 {
+		if useGold {
+			costGold = clientCost
+		} else {
+			costSilver = clientCost
+		}
+	}
+	p, perr := srv.DB.EnsureProfile(cctx, ctx.Sess.Userid)
+	if perr != nil {
+		return nil, false
+	}
+	if useGold {
+		if p.Gold < costGold {
+			ctx.Log.Info("工坊换件：金币不足", "balance", p.Gold, "cost", costGold)
+			return nil, false
+		}
+		_ = srv.DB.UpdateBalance(cctx, ctx.Sess.Userid, p.Silver, p.Gold-costGold, p.Bank)
+		_ = srv.DB.AddTxn(cctx, ctx.Sess.Userid, "workshop_part", "", itemGUID, 0, -costGold, "gold")
+	} else {
+		if p.Silver < costSilver {
+			ctx.Log.Info("工坊换件：银币不足", "balance", p.Silver, "cost", costSilver)
+			return nil, false
+		}
+		_ = srv.DB.UpdateBalance(cctx, ctx.Sess.Userid, p.Silver-costSilver, p.Gold, p.Bank)
+		_ = srv.DB.AddTxn(cctx, ctx.Sess.Userid, "workshop_part", "", itemGUID, -costSilver, 0, "silver")
+	}
+	fj, jerr := FieldsToJSON(fields)
+	if jerr != nil {
+		return nil, false
+	}
+	if err := srv.DB.UpdateItemFields(cctx, row.GUID, fj, row.Qty, row.Durability, row.Workmanship, row.RigGUID); err != nil {
+		return nil, false
+	}
+	row.FieldsJSON = fj
+	out, terr := srv.ItemToTree(cctx, row)
+	if terr != nil {
+		return nil, false
+	}
+	bodyOut, berr := proto.EncodeValue(out, ctx.Sess.Table())
+	if berr != nil {
+		return nil, false
+	}
+	return bodyOut, true
 }
 
 // hWorkshopRepair 构造 21/3 银币修理或 21/4 金币修理处理器。
