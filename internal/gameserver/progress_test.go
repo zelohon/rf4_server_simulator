@@ -168,7 +168,7 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 		t.Fatalf("入账累计 xp=%d, want %d", p.XP, wantTotal)
 	}
 
-	// 813 内嵌 310：f0=totalXP、f5=0、f6 空列表（B4 展示行未开）。
+	// 813 内嵌 310：f0=totalXP、f1=升级数（未升级必须 0）、f5=0、f6 加成行。
 	obj813 := srv.buildSettle813(ctx, 1000001, f, res)
 	obj310 := obj813.Field(8).Val
 	if obj310 == nil || obj310.Class != "kegeppimjbm" {
@@ -177,8 +177,8 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 	if got := u64Of(obj310.Field(0).Num); got != uint64(wantTotal) {
 		t.Fatalf("310.f0=%d, want %d", got, wantTotal)
 	}
-	if got := u32Of(obj310.Field(1).Num); got != 1 {
-		t.Fatalf("310.f1=%d, want 1（该鱼种尚无入护纪录）", got)
+	if got := u32Of(obj310.Field(1).Num); got != 0 {
+		t.Fatalf("310.f1=%d, want 0（f1 是升级数，未升级不能非 0，否则客户端会弹「新级别」）", got)
 	}
 	if got := u32Of(obj310.Field(5).Num); got != 0 {
 		t.Fatalf("310.f5=%d, want 0", got)
@@ -333,6 +333,12 @@ func TestPersonalRecordFlagFollowsKeptWeight(t *testing.T) {
 	if _, err := srv.DB.EnsureProfile(ctx, uid); err != nil {
 		t.Fatal(err)
 	}
+	// 先把等级/经验抬到高位，避免这条鱼触发升级 —— 否则 310.f1 会被合法写非 0，
+	// 干扰本用例对"纪录不入 310.f1"的断言。
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE profile SET level=30, xp=? WHERE uid=?`,
+		baseXp(30), uid); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.CatchLogInsert(ctx, uid, "loc", 1, "perch", "", 800, 0.3, "keep", "worm", 3, 10, 10, "level_001_lake"); err != nil {
 		t.Fatal(err)
 	}
@@ -341,19 +347,42 @@ func TestPersonalRecordFlagFollowsKeptWeight(t *testing.T) {
 	if res.isRecord {
 		t.Fatal("642g 未超过已入护的 800g，不应记为个人纪录")
 	}
+	// 纪录只影响 catch_log / 321 统计，绝不能写进 310.f1（那是升级数）。
 	if got := u32Of(srv.buildSettle813(ctx, uid, lighter, res).Field(8).Val.Field(1).Num); got != 0 {
-		t.Fatalf("310.f1=%d, want 0", got)
+		t.Fatalf("310.f1=%d, want 0（未升级）", got)
 	}
 	heavier := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 4, WeightG: 900, LengthM: 0.35, LocLevel: "level_001_lake"}
 	res2 := srv.settleCatchXP(ctx, uid, heavier, "worm_01")
 	if !res2.isRecord {
 		t.Fatal("900g 超过已入护的 800g，应记为个人纪录")
 	}
-	if got := u32Of(srv.buildSettle813(ctx, uid, heavier, res2).Field(8).Val.Field(1).Num); got != 1 {
-		t.Fatalf("310.f1=%d, want 1", got)
+	if got := u32Of(srv.buildSettle813(ctx, uid, heavier, res2).Field(8).Val.Field(1).Num); got != 0 {
+		t.Fatalf("破纪录但未升级时 310.f1=%d, want 0", got)
 	}
 	if got := u32Of(srv.build813(ctx, uid, heavier, 900).Field(8).Val.Field(1).Num); got != 0 {
-		t.Fatalf("同重 310.f1=%d, want 0", got)
+		t.Fatalf("旧路径 310.f1=%d, want 0", got)
+	}
+}
+
+// TestSettleLevelGainWritesField1 验证真正升级时 310.f1 才携带升级数。
+// 客户端用这个字段播放「新级别」庆祝，值必须等于本次提升的级数。
+func TestSettleLevelGainWritesField1(t *testing.T) {
+	srv, _ := newProgressSrv(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+	if _, err := srv.DB.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	// 1 级起手：6000g 的 2 档鱼按 0.4 经验/克 ≈ 2400 经验，足以连升数级。
+	f := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 2, WeightG: 6000,
+		LengthM: 0.6, LocLevel: "level_001_lake"}
+	res := srv.settleCatchXP(ctx, uid, f, "worm_01")
+	if res.levelsGained <= 0 {
+		t.Fatalf("前置条件失败：应至少升 1 级，实得 %d", res.levelsGained)
+	}
+	got := u32Of(srv.buildSettle813(ctx, uid, f, res).Field(8).Val.Field(1).Num)
+	if got != uint32(res.levelsGained) {
+		t.Fatalf("310.f1=%d, want %d（本次升级数）", got, res.levelsGained)
 	}
 }
 

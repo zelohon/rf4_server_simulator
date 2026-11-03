@@ -285,16 +285,8 @@ func (s *Server) settleStatics(ctx context.Context, species string) [6]int64 {
 	return [6]int64{f0, f1, f2, f3, f4, f5}
 }
 
-// personalRecordFlag 把个人纪录写成 310.f1。协议样本里还有 3，含义未确认，不使用。
-func personalRecordFlag(isRecord bool) uint32 {
-	if isRecord {
-		return 1
-	}
-	return 0
-}
-
 // buildSettle813 构造 813 搏斗统计块：f8 是 310 经验块，f9 是 25 鱼条目。
-// 310.f5 保存本次升级数，310.f6 保存加成分解，813.f4 由第五项静态值随机缩放。
+// 310.f1/f5 保存本次升级数，310.f6 保存加成分解，813.f4 由第五项静态值随机缩放。
 func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r *settleXpResult) *proto.Value {
 	statics := s.settleStatics(ctx, f.Species)
 	f4 := int64(float64(statics[4]) * (0.9 + rand.Float64()*0.2)) // 向下取整
@@ -307,11 +299,15 @@ func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r
 	}
 	silverCents := int64(math.Round(silverRate * math.Max(1, float64(f.WeightG))))
 
-	// 310 经验块：f0=总经验，f2=钓法大类，f3=熟练度增量，
-	// f5=本次升级数，f6=加成分解列表。
+	// 310 经验块：f0=单条鱼经验，f2=钓法大类，f3=熟练度增量，
+	// f1=本次升级数，f5=同义字段（历史实现也写升级数），f6=加成分解列表。
+	//
+	// f1 绝不能再塞"个人纪录"标志：客户端把 f1 当升级数，
+	// 只要非 0 就播一次「新级别」并连带弹出新水域解锁。
+	// 入护纪录只走 321.f2（蓝冠统计）与 catch_log，不进 310。
 	obj310 := wiregen.MustMakeObj("kegeppimjbm", map[int]*proto.Value{
 		0: proto.U64(uint64(r.totalXP)),
-		1: proto.U32(personalRecordFlag(r != nil && r.isRecord)),
+		1: proto.U32(uint32(max64(0, r.levelsGained))),
 		2: proto.U32(uint32(r.skillID)),
 		3: proto.F32(0.2),
 		4: proto.Null(),
