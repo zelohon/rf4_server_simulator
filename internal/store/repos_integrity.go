@@ -28,6 +28,7 @@ var PlayerTables = []string{
 var RuntimeTables = []string{
 	"tunables", "admin_user", "audit_log", "gift_pack", "gw_token", "gw_handoff",
 	"gateway_account",
+	"happy_hour_config",
 	"kv", "admin_queue", "achievement_def", "static_dataset_meta", "schema_migrations",
 	"request_receipts", "market_offer", "shop_item_override",
 	"fish_weight_override", "fish_bite_setting",
