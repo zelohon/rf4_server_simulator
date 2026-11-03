@@ -27,7 +27,8 @@ func main() {
 	var (
 		initKey = flag.Bool("init", false, "生成新的密钥对")
 		keyPath = flag.String("key", "license-private.key", "私钥文件路径")
-		code    = flag.String("code", "", "卡密：只用于生成票据内的标识，卡密本身不会写进票据")
+		code    = flag.String("code", "", "卡密：以密文写入票据，供客户机启动时在线复核")
+		check   = flag.Bool("check", false, "签发前先在线验证卡密是否可用")
 		days    = flag.Int("days", 180, "有效天数")
 		out     = flag.String("out", "auth.ticket", "票据输出路径")
 		note    = flag.String("note", "", "备注，例如客户名")
@@ -57,10 +58,30 @@ func main() {
 		fail("私钥格式错误", nil)
 	}
 
+	// 签发前可选地先验一次卡密，避免把一张已停用的卡打进客户包。
+	if *check && strings.TrimSpace(*code) != "" {
+		status, detail := license.CheckOnline(strings.TrimSpace(*code), 8*time.Second)
+		switch status {
+		case license.OnlineValid:
+			fmt.Println("在线校验: 卡密有效")
+		case license.OnlineOffline:
+			fmt.Printf("在线校验: 连不上平台，跳过（%s）\n", detail)
+		default:
+			fail("在线校验: 卡密不可用（"+detail+"），已中止签发", nil)
+		}
+	}
+
 	t := license.Ticket{
 		Lic:      license.LicID(*code),
 		Note:     strings.TrimSpace(*note),
 		ExpireAt: time.Now().AddDate(0, 0, *days).Unix(),
+	}
+	// 卡密以密文写进票据，供客户机启动时在线复核。
+	// 不传 -code 则生成纯离线票据，只受有效期约束。
+	if enc, err := license.SealCode(strings.TrimSpace(*code)); err != nil {
+		fail("卡密加密失败", err)
+	} else {
+		t.Enc = enc
 	}
 	if err := license.Sign(&t, ed25519.PrivateKey(privBytes)); err != nil {
 		fail("签名失败", err)

@@ -28,7 +28,7 @@ from pathlib import Path
 MIN_DIR = Path(r"C:\Users\edge\Desktop\fish-localserver-min")
 GO_BIN = Path(r"D:\rf4_src\bin")
 PRIVATE_KEY = Path(r"D:\license-private.key")
-DEFAULT_CODE = "FSODA6E2C41A6E23688AFE42860AFDD1"
+# 卡密不再有默认值：一客户一卡，打包时必须显式传 --code。
 
 COPY_FILES = [
     "config.yaml",
@@ -176,7 +176,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True, help="客户名，用于 zip 文件名和票据备注")
     ap.add_argument("--days", type=int, default=180, help="授权天数，默认 180")
-    ap.add_argument("--code", default=DEFAULT_CODE, help="卡密（仅用于生成票据标识）")
+    ap.add_argument("--code", default="",
+                    help="该客户专属卡密（一客户一卡）。留空则生成不联网的纯离线包")
+    ap.add_argument("--no-check", action="store_true",
+                    help="跳过签发前的卡密在线验证")
     ap.add_argument("--out", default=r"D:\release", help="输出目录")
     ap.add_argument("--admin-pass", default="", help="管理密码，留空则随机生成")
     args = ap.parse_args()
@@ -232,17 +235,19 @@ def main():
     if code != 0 or "seed 完成" not in out:
         fail(f"seed 初始化失败：\n{out[-800:]}")
 
-    print("[4/6] 签发票据（不含卡密明文，备注留空）")
-    code, out = run(
-        [str(GO_BIN / "license-gen.exe"), "-key", str(PRIVATE_KEY),
-         "-code", args.code, "-days", str(args.days),
-         "-out", str(pkg / "data" / "runtime.dat")],
-        pkg,
-    )
+    print("[4/6] 签发票据（卡密以密文写入，文件内无明文）")
+    gen_args = [str(GO_BIN / "license-gen.exe"), "-key", str(PRIVATE_KEY),
+                "-code", args.code, "-days", str(args.days),
+                "-out", str(pkg / "data" / "runtime.dat")]
+    if args.code and not args.no_check:
+        gen_args.insert(1, "-check")
+    code, out = run(gen_args, pkg)
     if code != 0:
         fail(f"票据签发失败：{out[-400:]}")
     lic = re.search(r"卡密标识:\s*(\w+)", out)
     expire = re.search(r"到期:\s*(.+)", out)
+    if not args.code:
+        print("    注意：未指定 --code，该包为纯离线票据，只受有效期约束")
 
     print("[5/6] 写入说明文件")
     with open(pkg / "快速开始.txt", "w", encoding="utf-8", newline="\r\n") as f:
@@ -259,7 +264,12 @@ def main():
     print(f"  包文件：{zip_path}  ({size_mb:.1f} MB)")
     print(f"  管理密码：{admin_pass}")
     print(f"  授权到期：{expire.group(1).strip() if expire else '-'}")
-    print(f"  卡密标识：{lic.group(1) if lic else '-'}")
+    print(f"  卡密标识：{lic.group(1) if lic else '(无，纯离线包)'}")
+    print(f"  复核方式：{'联网时向平台复核卡密，断网按到期日' if args.code else '仅按到期日，不联网'}")
+    if args.code:
+        print("\n请把这行记进你自己的台账（包里不保存卡密明文）：")
+        print(f"  {name}  code={args.code[:6]}…{args.code[-4:]}  lic={lic.group(1) if lic else '-'}  "
+              f"到期={expire.group(1).strip() if expire else '-'}")
 
 
 if __name__ == "__main__":

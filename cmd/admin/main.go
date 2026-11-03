@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -35,9 +36,18 @@ func main() {
 	}
 	log := logging.New(cfg.Log.Level, cfg.Log.Format)
 
-	// 离线授权校验：失败时只记录内部错误码，不向使用者暴露原因。
-	if err := license.GuardConfig(*configPath); err != nil {
-		log.Error("服务初始化失败", "code", "E2107")
+	// 授权校验：本地票据 + 在线复核。有网时由平台决定是否放行，
+	// 无网时退回本地有效期。失败只记录内部错误码，不向使用者暴露原因。
+	var licErr error
+	if err := license.GuardConfigOnline(*configPath, 4*time.Second); err != nil {
+		licErr = err
+	}
+	if licErr != nil {
+		code := "E2107"
+		if errors.Is(licErr, license.ErrOnlineRejected) {
+			code = "E2108"
+		}
+		log.Error("服务初始化失败", "code", code)
 		os.Exit(1)
 	}
 

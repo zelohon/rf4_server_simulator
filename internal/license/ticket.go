@@ -25,13 +25,18 @@ var (
 	ErrBadSignature = errors.New("license: bad signature")
 	// ErrExpired 表示票据已过期。
 	ErrExpired = errors.New("license: expired")
+	// ErrOnlineRejected 表示在线复核明确判定卡密不可用。
+	ErrOnlineRejected = errors.New("license: online rejected")
 )
 
 // TicketVersion 是当前票据格式版本。
 //
-// v2 起不再在票据里保存卡密明文，只保存卡密的 SHA-256 前缀（Lic），
-// 用于区分是哪张卡签发的。卡密只存在于签发者的机器上，绝不随包分发。
-const TicketVersion = 2
+// v3 起票据额外携带「卡密密文」（Enc），用于启动时向授权平台复核：
+//   - 有网 → 平台判定卡密是否仍被允许，受平台控制；
+//   - 无网 → 只看本票据的 ExpireAt，到期即拒绝。
+//
+// 卡密以 AES-256-GCM 密文存放，打开文件看不到明文。
+const TicketVersion = 3
 
 // ticketFile 是票据在 <root>/data 下的文件名。
 //
@@ -39,10 +44,11 @@ const TicketVersion = 2
 // 文件名里出现 license/auth 会直接提示"这里有授权校验"。
 const ticketFile = "runtime.dat"
 
-// Ticket 是离线授权凭证。
+// Ticket 是授权凭证。
 type Ticket struct {
 	Version  int    `json:"v"`
-	Lic      string `json:"lic"` // 卡密 SHA-256 前 12 位
+	Lic      string `json:"lic"`           // 卡密 SHA-256 前 12 位，仅用于人工核对
+	Enc      string `json:"enc,omitempty"` // 卡密密文，供启动时在线复核
 	IssuedAt int64  `json:"issued_at"`
 	ExpireAt int64  `json:"expire_at"`
 	Note     string `json:"note,omitempty"`
@@ -50,8 +56,8 @@ type Ticket struct {
 }
 
 func (t *Ticket) payload() []byte {
-	return []byte(fmt.Sprintf("%d|%s|%d|%d|%s",
-		t.Version, t.Lic, t.IssuedAt, t.ExpireAt, t.Note))
+	return []byte(fmt.Sprintf("%d|%s|%s|%d|%d|%s",
+		t.Version, t.Lic, t.Enc, t.IssuedAt, t.ExpireAt, t.Note))
 }
 
 // LicID 把卡密折算成票据里使用的标识（SHA-256 前 12 位）。
@@ -114,10 +120,10 @@ func Load(path string) (*Ticket, error) {
 	return &t, nil
 }
 
-// Guard 校验 <rootDir>/data/runtime.dat。
+// Guard 只做本地校验：签名、格式、有效期。
 //
-// 返回 nil 表示放行。调用方在失败时必须静默退出，不要向使用者展示
-// 任何与授权相关的提示——这是产品要求，也避免给破解者提供定位线索。
+// gateway 与 gameserver 用这个——它们只消费凭证，不联网，
+// 保证断网或平台故障时整套服务不会集体起不来。
 func Guard(rootDir string) error {
 	return GuardWith(PublicKey(), rootDir)
 }
@@ -132,6 +138,47 @@ func GuardWith(pub ed25519.PublicKey, rootDir string) error {
 		return err
 	}
 	return Verify(t, pub, time.Now())
+}
+
+// GuardOnline 本地校验 + 在线复核，供 admin 使用。
+//
+// 判定顺序：
+//  1. 本地票据无效（缺失/签名错/已过期）→ 拒绝，不联网；
+//  2. 票据里没有卡密密文（纯离线票）→ 放行，只受有效期约束；
+//  3. 连不上平台 → 放行（离线场景），仍受有效期约束；
+//  4. 平台明确判定卡密不可用 → 拒绝。
+//
+// 这样「有网受平台控制、无网受时间限制」同时成立。
+func GuardOnline(rootDir string, timeout time.Duration) error {
+	if DevMode(rootDir) {
+		return nil
+	}
+	t, err := Load(filepath.Join(rootDir, "data", ticketFile))
+	if err != nil {
+		return err
+	}
+	if err := Verify(t, PublicKey(), time.Now()); err != nil {
+		return err
+	}
+	code, err := OpenCode(t.Enc)
+	if err != nil {
+		// 没有密文说明是纯离线票据，按有效期放行。
+		return nil
+	}
+	status, _ := onlineCheck(code, timeout)
+	if status == OnlineInvalid {
+		return ErrOnlineRejected
+	}
+	return nil
+}
+
+// GuardConfigOnline 按配置文件路径推导项目根目录后做在线复核。
+func GuardConfigOnline(configPath string, timeout time.Duration) error {
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
+	}
+	return GuardOnline(filepath.Dir(abs), timeout)
 }
 
 // GuardConfig 按配置文件路径推导项目根目录后再校验授权。
