@@ -19,6 +19,11 @@ const (
 	f32Const801F2 = uint32(1092571843) // 801.f2 位型
 	castDepthBits = uint32(1091032928) // 158.f2 = f32 8.4900818
 	profileFlags  = uint32(17 | 0x100) // 0x100：跳过绑定邮箱提示
+
+	// 307.f14 / f16 是客户端保留字段，官方值恒为 0 / 1。
+	// 改动会让客户端在每次收到档案时重复播放"新等级 / 新水域"提示。
+	profileFlagReserved14 = uint32(0)
+	profileFlagReserved16 = uint32(1)
 )
 
 // BuildPose308 玩家姿态块（2/2 与 307.f12 共用；f7=世界时钟 FILETIME）。
@@ -99,12 +104,6 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 	nowUnix := time.Now().Unix()
 	memActive := p.Membership == 1 && p.MembershipExpireAt > nowUnix
 
-	// 欢乐时光状态（试验：塞进 f14/f16，看客户端 RUIHappyHourWidget 是否响应）。
-	hhActive, hhRemaining, _ := s.HappyHourState(ctx, uid)
-	hhFlag := uint32(0)
-	if hhActive {
-		hhFlag = 1
-	}
 	var membershipExp uint64
 	memFlag := uint32(0)
 	if memActive {
@@ -143,9 +142,13 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		11: proto.U64(membershipExp),
 		12: BuildPose308(),
 		13: BuildStats322(ctx, s.DB, p.UID),
-		14: proto.U32(hhFlag),               // 欢乐时光激活标志（试验）
+		// f14/f16 是客户端自己的保留字段，官方取值恒为 0 / 1。
+		// 曾把欢乐时光状态塞进来做试验，结果客户端把 f14 当"庆祝/提示"枚举，
+		// 每次结算（801.f7 与 2/1 都会带整份档案）都弹一次"新等级 / 新水域"。
+		// 欢乐时光只通过 310.f6 的加成行表达，别再动这两格。
+		14: proto.U32(profileFlagReserved14),
 		15: proto.U32(profileFlags),
-		16: proto.U32(uint32(hhRemaining)),  // 欢乐时光剩余秒数（试验）
+		16: proto.U32(profileFlagReserved16),
 		17: proto.StrVal(p.Email),
 		18: proto.U32(uint32(p.Role)),
 		19: proto.U64(uint64(p.Bank)),
