@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS profile(
     gold         INTEGER NOT NULL DEFAULT 0,
     region       TEXT    DEFAULT 'CN',
     membership   INTEGER NOT NULL DEFAULT 0,
+    membership_expire_at INTEGER NOT NULL DEFAULT 0,
     stars        INTEGER NOT NULL DEFAULT 0,
     created_ts   REAL,
     updated_ts   REAL,

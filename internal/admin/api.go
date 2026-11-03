@@ -72,6 +72,8 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("POST /api/players/skills/points", auth(s.handlePlayerSkillPoints))
 	mux.HandleFunc("POST /api/players/kick", auth(s.handleKick))
 	mux.HandleFunc("POST /api/players/ban", auth(s.handleBan))
+	mux.HandleFunc("POST /api/players/membership", auth(s.handleGrantMembership))
+	mux.HandleFunc("POST /api/players/membership/revoke", auth(s.handleRevokeMembership))
 	mux.HandleFunc("GET /api/catalog/items", auth(s.handleCatalogItems))
 	mux.HandleFunc("GET /api/stores", auth(s.handleStores))
 	mux.HandleFunc("GET /api/stores/items", auth(s.handleStoreItems))
@@ -324,7 +326,8 @@ func (s *Server) handlePlayerDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"uid": p.UID, "name": p.Name, "level": p.Level, "xp": p.XP,
 		"silver": p.Silver, "gold": p.Gold, "bank": p.Bank,
-		"membership": p.Membership, "stars": p.Stars, "email": p.Email,
+		"membership": p.Membership, "membership_expire_at": p.MembershipExpireAt,
+		"stars": p.Stars, "email": p.Email,
 		"role": p.Role, "banned": p.Banned,
 		"item_count": len(items), "keepnet_count": len(keepnet), "mail_count": len(mails),
 		"items": items, "keepnet": keepnet, "mails": mailRows, "skills": skills,
@@ -416,6 +419,49 @@ func (s *Server) handleKick(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{"op": "kick", "uid": req.UID}))
 	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "kick", strconv.FormatInt(req.UID, 10), "")
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleGrantMembership 开通或续期会员。
+//
+// 参数 days <= 0 表示长期；续期从原到期日顺延（见 store.GrantMembership）。
+func (s *Server) handleGrantMembership(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UID  int64 `json:"uid"`
+		Days int   `json:"days"`
+	}
+	if err := readJSON(r, &req); err != nil || req.UID == 0 {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	exp, err := s.db.GrantMembership(r.Context(), req.UID, req.Days)
+	if err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "membership.grant",
+		strconv.FormatInt(req.UID, 10), fmt.Sprintf("days=%d exp=%d", req.Days, exp))
+	writeJSON(w, map[string]any{
+		"ok": true, "membership": 1, "membership_expire_at": exp,
+		"days_left": (exp - time.Now().Unix()) / 86400,
+	})
+}
+
+// handleRevokeMembership 取消会员。
+func (s *Server) handleRevokeMembership(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UID int64 `json:"uid"`
+	}
+	if err := readJSON(r, &req); err != nil || req.UID == 0 {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	if err := s.db.RevokeMembership(r.Context(), req.UID); err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "membership.revoke",
+		strconv.FormatInt(req.UID, 10), "")
+	writeJSON(w, map[string]any{"ok": true, "membership": 0})
 }
 
 func (s *Server) handleBan(w http.ResponseWriter, r *http.Request) {

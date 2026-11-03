@@ -95,9 +95,14 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		placeItems = append(placeItems, proto.BytesOf([]byte(pl)))
 	}
 
+	// 会员：以「到期时间」为唯一真值，避免过期后仍显示已激活。
+	nowUnix := time.Now().Unix()
+	memActive := p.Membership == 1 && p.MembershipExpireAt > nowUnix
 	var membershipExp uint64
-	if p.Membership == 1 {
-		membershipExp = uint64(proto.UnixToFiletime(time.Now().Add(30 * 24 * time.Hour).Unix()))
+	memFlag := uint32(0)
+	if memActive {
+		memFlag = 1
+		membershipExp = uint64(proto.UnixToFiletime(p.MembershipExpireAt))
 	}
 	totalPts := skillPointsTotal(p.Level)
 
@@ -123,7 +128,7 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		7:  proto.U64(uint64(p.Silver)),
 		8:  proto.U64(uint64(p.Gold)),
 		9:  proto.StrVal(""),
-		10: proto.U32(uint32(p.Membership)),
+		10: proto.U32(memFlag),
 		11: proto.U64(membershipExp),
 		12: BuildPose308(),
 		13: BuildStats322(ctx, s.DB, p.UID),

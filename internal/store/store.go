@@ -102,6 +102,7 @@ func (d *DB) ensureLegacyPlayerColumns() error {
 	}{
 		{"profile", "region", "TEXT DEFAULT 'CN'"},
 		{"profile", "membership", "INTEGER NOT NULL DEFAULT 0"},
+		{"profile", "membership_expire_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"profile", "stars", "INTEGER NOT NULL DEFAULT 0"},
 		{"profile", "created_ts", "REAL"},
 		{"profile", "updated_ts", "REAL"},
