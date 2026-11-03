@@ -64,7 +64,7 @@ QUICKSTART = """fish-localserver 使用说明
 三、管理账号
 ------------
 管理用户名：admin
-管理密码：见「客户信息.txt」
+管理密码：{admin_pass}
 
 登录后请立即修改密码。
 
@@ -195,11 +195,11 @@ def main():
     if code != 0 or "seed 完成" not in out:
         fail(f"seed 初始化失败：\n{out[-800:]}")
 
-    print("[4/6] 签发票据（不含卡密明文）")
+    print("[4/6] 签发票据（不含卡密明文，备注留空）")
     code, out = run(
         [str(GO_BIN / "license-gen.exe"), "-key", str(PRIVATE_KEY),
          "-code", args.code, "-days", str(args.days),
-         "-note", name, "-out", str(pkg / "data" / "auth.ticket")],
+         "-out", str(pkg / "data" / "runtime.dat")],
         pkg,
     )
     if code != 0:
@@ -208,22 +208,8 @@ def main():
     expire = re.search(r"到期:\s*(.+)", out)
 
     print("[5/6] 写入说明文件")
-    for fname, content in (
-        ("快速开始.txt", QUICKSTART),
-        ("客户信息.txt", f"""部署信息
-================================
-客户名称：{name}
-管理员账号：admin
-管理员密码：{admin_pass}
-
-授权到期：{expire.group(1).strip() if expire else '见票据'}
-卡密标识：{lic.group(1) if lic else '-'}（仅哈希，非卡密）
-
-请妥善保存本文件，登录管理后台后立即修改密码。
-"""),
-    ):
-        with open(pkg / fname, "w", encoding="utf-8", newline="\r\n") as f:
-            f.write(content)
+    with open(pkg / "快速开始.txt", "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(QUICKSTART.format(admin_pass=admin_pass))
 
     print("[6/6] 打包 zip")
     zip_base = out_dir / f"fish-localserver-{name}-{today}"

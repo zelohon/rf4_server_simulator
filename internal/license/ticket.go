@@ -33,6 +33,12 @@ var (
 // 用于区分是哪张卡签发的。卡密只存在于签发者的机器上，绝不随包分发。
 const TicketVersion = 2
 
+// ticketFile 是票据在 <root>/data 下的文件名。
+//
+// 刻意用了中性的名字：授权是内部约束，不对使用者展示，
+// 文件名里出现 license/auth 会直接提示"这里有授权校验"。
+const ticketFile = "runtime.dat"
+
 // Ticket 是离线授权凭证。
 type Ticket struct {
 	Version  int    `json:"v"`
@@ -51,7 +57,7 @@ func (t *Ticket) payload() []byte {
 // LicID 把卡密折算成票据里使用的标识（SHA-256 前 12 位）。
 //
 // 票据只带这个标识，不带卡密本身，所以把程序分发给客户时
-// 即使有人打开 auth.ticket 也拿不到可用的卡密。
+// 即使有人打开这个文件也拿不到可用的卡密。
 func LicID(code string) string {
 	code = strings.TrimSpace(code)
 	if code == "" {
@@ -108,7 +114,7 @@ func Load(path string) (*Ticket, error) {
 	return &t, nil
 }
 
-// Guard 校验 <rootDir>/data/auth.ticket。
+// Guard 校验 <rootDir>/data/runtime.dat。
 //
 // 返回 nil 表示放行。调用方在失败时必须静默退出，不要向使用者展示
 // 任何与授权相关的提示——这是产品要求，也避免给破解者提供定位线索。
@@ -121,7 +127,7 @@ func GuardWith(pub ed25519.PublicKey, rootDir string) error {
 	if DevMode(rootDir) {
 		return nil
 	}
-	t, err := Load(filepath.Join(rootDir, "data", "auth.ticket"))
+	t, err := Load(filepath.Join(rootDir, "data", ticketFile))
 	if err != nil {
 		return err
 	}
@@ -130,7 +136,7 @@ func GuardWith(pub ed25519.PublicKey, rootDir string) error {
 
 // GuardConfig 按配置文件路径推导项目根目录后再校验授权。
 //
-// 三个服务都以 “项目根/config.yaml” 的方式启动，票据固定放在 <root>/data/auth.ticket。
+// 三个服务都以 “项目根/config.yaml” 的方式启动，票据固定放在 <root>/data/runtime.dat。
 func GuardConfig(configPath string) error {
 	abs, err := filepath.Abs(configPath)
 	if err != nil {
@@ -141,7 +147,7 @@ func GuardConfig(configPath string) error {
 
 // Remaining 返回票据剩余时长，便于内部巡检判断是否需要提前预警。
 func Remaining(rootDir string) (time.Duration, error) {
-	t, err := Load(filepath.Join(rootDir, "data", "auth.ticket"))
+	t, err := Load(filepath.Join(rootDir, "data", ticketFile))
 	if err != nil {
 		return 0, err
 	}

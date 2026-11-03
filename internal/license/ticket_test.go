@@ -79,7 +79,7 @@ func TestGuardWith(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(tk)
-	path := filepath.Join(dir, "data", "auth.ticket")
+	path := filepath.Join(dir, "data", ticketFile)
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
