@@ -98,6 +98,13 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 	// 会员：以「到期时间」为唯一真值，避免过期后仍显示已激活。
 	nowUnix := time.Now().Unix()
 	memActive := p.Membership == 1 && p.MembershipExpireAt > nowUnix
+
+	// 欢乐时光状态（试验：塞进 f14/f16，看客户端 RUIHappyHourWidget 是否响应）。
+	hhActive, hhRemaining, _ := s.HappyHourState(ctx, uid)
+	hhFlag := uint32(0)
+	if hhActive {
+		hhFlag = 1
+	}
 	var membershipExp uint64
 	memFlag := uint32(0)
 	if memActive {
@@ -132,9 +139,9 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		11: proto.U64(membershipExp),
 		12: BuildPose308(),
 		13: BuildStats322(ctx, s.DB, p.UID),
-		14: proto.U32(0),
+		14: proto.U32(hhFlag),               // 欢乐时光激活标志（试验）
 		15: proto.U32(profileFlags),
-		16: proto.U32(1),
+		16: proto.U32(uint32(hhRemaining)),  // 欢乐时光剩余秒数（试验）
 		17: proto.StrVal(p.Email),
 		18: proto.U32(uint32(p.Role)),
 		19: proto.U64(uint64(p.Bank)),

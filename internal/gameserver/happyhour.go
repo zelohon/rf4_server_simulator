@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 
+	"rf4server/internal/proto"
 	"rf4server/internal/store"
+	"rf4server/internal/wiregen"
 )
 
 // 欢乐时光：服务端权威判定，客户端只负责显示。
@@ -83,3 +85,42 @@ func (s *Server) HappyHourState(ctx context.Context, uid int64) (active bool, re
 
 // compile-time 保证 store 被引用（IsPremium 用了 store.Profile）
 var _ = store.MembershipForeverExpireAt
+
+// buildBonusList 构造 310.f6 的加成行列表。
+//
+// 每行使用 kcgnjffmege (type_id=108)：
+//
+//	f0=倍率(F32Bits 编码成 U32，客户端显示 ×1.5)
+//	f1=guid（固定值，用加成类型做末段区分）
+//	f2=物品品类(0=非物品加成)
+//	f3=加成类型 liampcgfchp（4=会员 56=欢乐时光）
+//	f4=标志
+func (s *Server) buildBonusList(ctx context.Context, uid int64) *proto.Value {
+	list := proto.Args(proto.S("31"))
+	isPrem := s.IsPremium(ctx, uid)
+	hhActive, _, hhMult := s.HappyHourState(ctx, uid)
+	if !isPrem && !hhActive {
+		return list
+	}
+	if isPrem {
+		row := wiregen.MustMakeObj("kcgnjffmege", map[int]*proto.Value{
+			0: proto.U32(proto.F32Bits(float32(premiumXPBonus))),
+			1: proto.Guid("00000000-0000-0000-0000-000000000004"),
+			2: proto.U32(0),
+			3: proto.U32(bonusTypePremium),
+			4: proto.Null(),
+		})
+		list.Items = append(list.Items, row)
+	}
+	if hhActive {
+		row := wiregen.MustMakeObj("kcgnjffmege", map[int]*proto.Value{
+			0: proto.U32(proto.F32Bits(float32(hhMult))),
+			1: proto.Guid("00000000-0000-0000-0000-000000000056"),
+			2: proto.U32(0),
+			3: proto.U32(bonusTypeHappyHour),
+			4: proto.Null(),
+		})
+		list.Items = append(list.Items, row)
+	}
+	return list
+}

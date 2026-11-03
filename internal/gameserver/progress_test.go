@@ -184,8 +184,8 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 		t.Fatalf("310.f5=%d, want 0", got)
 	}
 	bonusList := obj310.Field(6).Val
-	if bonusList == nil || len(bonusList.Items) != 0 {
-		t.Fatalf("310.f6 应为空列表，got %v", bonusList)
+	if bonusList == nil || len(bonusList.Items) == 0 {
+		t.Fatalf("会员 310.f6 应有加成行，got %v", bonusList)
 	}
 
 	// 非会员：totalXP == baseXP，无加成记录。

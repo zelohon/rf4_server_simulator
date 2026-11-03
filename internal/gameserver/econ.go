@@ -93,6 +93,13 @@ func (s *Server) fishingEnd(ctx *Ctx) ([]byte, bool) {
 		xp, silver := catchValue(pending.Species, pending.Grade, pending.WeightG)
 		bonusXp := s.tunableF("xp_gain", 1.0)
 		xp = int64(math.Round(float64(xp) * bonusXp))
+		// —— 会员 + 欢乐时光经验倍率 ——
+		if s.IsPremium(cctx, uid) {
+			xp = int64(math.Round(float64(xp) * premiumXPBonus))
+		}
+		if hhActive, _, hhMult := s.HappyHourState(cctx, uid); hhActive {
+			xp = int64(math.Round(float64(xp) * hhMult))
+		}
 		prevBest, _ := s.DB.CatchLogMaxWeight(cctx, uid, pending.Species)
 		newLevel, _, gained := s.grantXp(cctx, uid, xp)
 		levelsGained = gained
@@ -183,7 +190,7 @@ func (s *Server) build813(ctx context.Context, uid int64, f *RolledFish, prevBes
 		3: proto.F32(0.2),
 		4: proto.Null(),
 		5: proto.U32(0), // levelsGained 由 2/6 承担
-		6: proto.Args(proto.S("31")),
+		6: s.buildBonusList(ctx, uid),
 	})
 	keep25 := s.buildPending25(f, s.stateFor(uid), s.currentLevel(uid))
 	// ndiejnnioni.f0..f6 是客户端按 U32 克重读取的整数，不能写 proto.F32；

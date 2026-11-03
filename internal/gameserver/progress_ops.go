@@ -316,7 +316,7 @@ func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r
 		3: proto.F32(0.2),
 		4: proto.Null(),
 		5: proto.U32(uint32(max64(0, r.levelsGained))),
-		6: proto.Args(proto.S("31")),
+		6: s.buildBonusList(ctx, uid),
 	})
 	keep25 := s.buildPending25(f, s.stateFor(uid), s.currentLevel(uid))
 	// ndiejnnioni.f0..f6 必须按 U32 克重编码；写成 F32 位型会导致客户端显示错误。
