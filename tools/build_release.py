@@ -31,7 +31,6 @@ PRIVATE_KEY = Path(r"D:\license-private.key")
 DEFAULT_CODE = "FSODA6E2C41A6E23688AFE42860AFDD1"
 
 COPY_FILES = [
-    "LICENSE",
     "config.yaml",
     "启动服务器.cmd",
 ]
@@ -99,6 +98,44 @@ def run(cmd, cwd):
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+def _align(line, comment, col):
+    """把行尾注释对齐到指定列；超长时退化为两个空格分隔。"""
+    return (line.ljust(col) if len(line) < col else line + "  ") + comment
+
+
+def clean_config_text(text):
+    """把配置注释里面向开发者的话术换成面向部署者的说法。
+
+    源码里的注释写着"本地开发值""对外使用前必须替换""请勿随包分发"，
+    这些话直接发给客户会暴露这是改过的开发版，因此打包时统一改写。
+    """
+    text = text.replace(
+        "# 本地开发配置。\r\n# 此文件保存本机实际配置，请勿随包分发；对外使用前请替换开发凭据。\r\n",
+        "# 服务器配置\r\n# 修改后需重启对应服务才会生效。\r\n",
+    )
+    # 顺序敏感：先匹配完整短语，再处理剩下的 psk 情况
+    text = text.replace("本地开发值；对外使用前必须替换。", "用于签发管理会话，请勿外泄。")
+    text = text.replace("本地测试密码；对外使用前必须替换。", "管理员密码。")
+    text = text.replace("本地开发值；", "")
+
+    text = re.sub(
+        r'(advertise_host:\s*"[^"]*")\s*#.*',
+        lambda m: _align(m.group(1), "# 改成这台服务器的内网 IP，否则客户端进不了游戏。", 39),
+        text, count=1,
+    )
+    text = re.sub(
+        r'(password:\s*"[^"]*")\s*#.*',
+        lambda m: _align(m.group(1), "# 管理员密码。", 49),
+        text, count=1,
+    )
+    text = re.sub(
+        r'(jwt_secret:\s*"[^"]*")\s*#.*',
+        lambda m: _align(m.group(1), "# 用于签发管理会话，请勿外泄。", 49),
+        text, count=1,
+    )
+    return text
+
+
 def patch_config(text, admin_pass):
     jwt = secrets.token_hex(24)
     psk = secrets.token_hex(16)
@@ -118,7 +155,7 @@ def patch_config(text, admin_pass):
     text, n = re.subn(r'(psk:\s*)"[^"]*"', rf'\g<1>"{psk}"', text, flags=re.M)
     if n < 1:
         fail("隧道 PSK 替换失败")
-    return text
+    return clean_config_text(text)
 
 
 def write_zip(pkg: Path, zip_path: Path):
