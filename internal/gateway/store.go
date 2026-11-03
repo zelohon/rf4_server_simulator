@@ -44,16 +44,29 @@ type Store interface {
 	DeleteHandoff(ctx context.Context, token string) error
 	// NextUserid 全局自增玩家 id（登录签发用）。
 	NextUserid(ctx context.Context) (int64, error)
+
+	// 账号：客户端登录框里的 login/password 映射到独立 uid。
+	LookupAccount(ctx context.Context, login string) (Account, bool, error)
+	CreateAccount(ctx context.Context, a Account) error
+	TouchAccount(ctx context.Context, login, ip, version string) error
+	DeleteAccount(ctx context.Context, login string) error
+	ListAccounts(ctx context.Context) ([]Account, error)
+	SetAccountPassword(ctx context.Context, login, sha1Hex string) error
+	SetAccountBanned(ctx context.Context, login string, banned bool) error
+	// NextAccountUserid 为新账号分配 uid，跳过 base 之前与已存在的档案。
+	NextAccountUserid(ctx context.Context, base int64) (int64, error)
 }
 
 // ---- MemStore（测试和内存模式）----
 
 // MemStore 进程内存储（非持久；测试与小规模本地开发用）。
 type MemStore struct {
-	mu      sync.Mutex
-	tokens  map[string]tokenEntry
-	handoff map[string]Handoff
-	userid  int64
+	mu         sync.Mutex
+	tokens     map[string]tokenEntry
+	handoff    map[string]Handoff
+	userid     int64
+	accounts   map[string]Account
+	accountUid int64
 }
 
 type tokenEntry struct {
@@ -64,9 +77,10 @@ type tokenEntry struct {
 // NewMemStore 构建内存存储。
 func NewMemStore(startUserid int64) *MemStore {
 	return &MemStore{
-		tokens:  map[string]tokenEntry{},
-		handoff: map[string]Handoff{},
-		userid:  startUserid - 1,
+		tokens:   map[string]tokenEntry{},
+		handoff:  map[string]Handoff{},
+		userid:   startUserid - 1,
+		accounts: map[string]Account{},
 	}
 }
 

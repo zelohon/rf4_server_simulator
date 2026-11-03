@@ -17,6 +17,7 @@ import (
 	"rf4server/internal/admin"
 	"rf4server/internal/buildinfo"
 	"rf4server/internal/config"
+	"rf4server/internal/license"
 	"rf4server/internal/logging"
 	"rf4server/internal/metrics"
 	"rf4server/internal/store"
@@ -33,6 +34,13 @@ func main() {
 		os.Exit(2)
 	}
 	log := logging.New(cfg.Log.Level, cfg.Log.Format)
+
+	// 离线授权校验：失败时只记录内部错误码，不向使用者暴露原因。
+	if err := license.GuardConfig(*configPath); err != nil {
+		log.Error("服务初始化失败", "code", "E2107")
+		os.Exit(1)
+	}
+
 	log.Info("admin 启动",
 		"version", buildinfo.Version, "commit", buildinfo.GitCommit,
 		"env", cfg.Env, "http", cfg.Admin.HTTPAddr)

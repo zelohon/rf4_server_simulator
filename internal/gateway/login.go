@@ -6,10 +6,13 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -109,13 +112,38 @@ func (s *LoginServer) Shutdown(ctx context.Context) error { return s.srv.Shutdow
 
 func (s *LoginServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	loginRequests.Inc()
+	q := r.URL.Query()
+	login := strings.TrimSpace(q.Get("login"))
+	password := q.Get("password")
+	clientVersion := q.Get("version")
+	clientID := q.Get("id")
 	_ = r.Body.Close()
-	// 客户端登录不发送账号凭据，无法区分账号；使用配置的固定 userid，
-	// 保证同一玩家重登后档案连续。未配置时再从共享序号分配。
+
+	if os.Getenv("RF4_LOGIN_PROBE") == "1" {
+		s.log.Info("登录请求",
+			"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr,
+			"host", r.Host, "login", login, "version", clientVersion,
+			"id", clientID, "region", q.Get("region"), "locale", q.Get("locale"),
+			"pwd_len", len(password), "ua", r.UserAgent())
+	}
+
+	// 账号模式：必须带账号与密码，且账号必须已存在（由控制台预先创建）。
 	userid := s.cfg.UseridStart
-	if userid <= 0 {
+	if s.cfg.AuthEnabled {
+		if login == "" || password == "" || strings.EqualFold(password, emptyPasswordSHA1) {
+			s.writeLoginFailure(w, r, login, ErrMissingCredentials)
+			return
+		}
+		acct, err := s.authenticate(r.Context(), login, password, r.RemoteAddr, clientVersion)
+		if err != nil {
+			s.writeLoginFailure(w, r, login, err)
+			return
+		}
+		userid = acct.Userid
+	} else if userid <= 0 {
 		userid, _ = s.nextUserid(r.Context())
 	}
+
 	token := NewToken(userid)
 	info := TokenInfo{Userid: userid, IssuedAt: time.Now().Unix(), Region: s.cfg.Region}
 	ttl := time.Duration(s.cfg.TokenTTL) * 24 * time.Hour
@@ -142,7 +170,74 @@ func (s *LoginServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(xml))
 	s.log.Info("登录",
 		"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr,
-		"userid", userid, "region", s.cfg.Region, "realtime", s.cfg.AdvertiseHost)
+		"login", login, "userid", userid, "region", s.cfg.Region,
+		"realtime", s.cfg.AdvertiseHost)
+}
+
+// authenticate 校验或建立账号，返回该账号绑定的 uid。
+func (s *LoginServer) authenticate(ctx context.Context, login, password, remote, version string) (Account, error) {
+	hashed := HashPassword(password)
+	acct, ok, err := s.store.LookupAccount(ctx, login)
+	if err != nil {
+		return Account{}, err
+	}
+	if ok {
+		if acct.Banned {
+			return Account{}, ErrAccountBanned
+		}
+		if !strings.EqualFold(acct.PasswordSHA1, hashed) {
+			return Account{}, ErrBadPassword
+		}
+		_ = s.store.TouchAccount(ctx, login, remote, version)
+		return acct, nil
+	}
+	if !s.cfg.AuthAutoRegister {
+		return Account{}, ErrAccountNotFound
+	}
+	uid, err := s.store.NextAccountUserid(ctx, s.cfg.UseridStart)
+	if err != nil {
+		return Account{}, err
+	}
+	now := time.Now().Unix()
+	fresh := Account{
+		Login: login, PasswordSHA1: hashed, Userid: uid,
+		CreatedAt: now, LastLoginAt: now, LastIP: remote, ClientVersion: version,
+	}
+	if err := s.store.CreateAccount(ctx, fresh); err != nil {
+		// 并发下可能已被另一请求创建，回查一次按已存在账号处理。
+		if again, ok2, err2 := s.store.LookupAccount(ctx, login); err2 == nil && ok2 {
+			if !strings.EqualFold(again.PasswordSHA1, hashed) {
+				return Account{}, ErrBadPassword
+			}
+			return again, nil
+		}
+		return Account{}, err
+	}
+	s.log.Info("新账号注册", "login", login, "userid", uid, "remote", remote)
+	return fresh, nil
+}
+
+// writeLoginFailure 返回客户端可识别的失败应答（success="false"）。
+func (s *LoginServer) writeLoginFailure(w http.ResponseWriter, r *http.Request, login string, err error) {
+	loginErrors.Inc()
+	reason := "登录失败"
+	switch {
+	case errors.Is(err, ErrBadPassword):
+		reason = "账号或密码错误"
+	case errors.Is(err, ErrAccountNotFound):
+		reason = "账号不存在"
+	case errors.Is(err, ErrAccountBanned):
+		reason = "账号已被封禁"
+	case errors.Is(err, ErrMissingCredentials):
+		reason = "请输入账号和密码"
+	}
+	xml := fmt.Sprintf(`<logon success="false"><reason>%s</reason></logon>`, html.EscapeString(reason))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(xml)))
+	w.Header().Set("Connection", "close")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(xml))
+	s.log.Warn("登录失败", "login", login, "remote", r.RemoteAddr, "reason", reason)
 }
 
 func (s *LoginServer) nextUserid(ctx context.Context) (int64, error) {

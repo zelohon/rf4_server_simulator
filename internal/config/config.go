@@ -61,6 +61,11 @@ type Gateway struct {
 
 	TokenTTL          int     `yaml:"token_ttl_days"`         // 登录 token 有效期（天）
 	UseridStart       int64   `yaml:"userid_start"`           // 自增 userid 起点
+
+	// 账号登录：客户端在 /login.php 的 query 里上送 login / password(SHA1)。
+	// 开启后每个账号固定独立 uid，一台机器可同时登录多个账号且互不串档。
+	AuthEnabled      bool `yaml:"auth_enabled"`       // 启用账号校验（关闭则沿用固定 userid）
+	AuthAutoRegister bool `yaml:"auth_auto_register"` // 首次登录的账号自动建立
 	BiteProbability   float64 `yaml:"bite_probability"`       // 起竿判出鱼概率（1.0=每杆必出）
 	BiteDelayScale    float64 `yaml:"bite_delay_scale"`       // 咬钩延迟倍率
 	BiteDelayFixed    float64 `yaml:"bite_delay_fixed"`       // 固定咬钩延迟秒（>0 时忽略分布）
@@ -135,6 +140,8 @@ func defaults() *Config {
 			ObsAddr:               ":9501",
 			TokenTTL:              365,
 			UseridStart:           1000001,
+			AuthEnabled:           true,
+			AuthAutoRegister:      false,
 			BiteProbability:       1.0,
 			BiteDelayScale:        1.0,
 			BiteDelayFixed:        0,

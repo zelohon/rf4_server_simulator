@@ -84,6 +84,12 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("GET /api/fish/pool", auth(s.handleFishPool))
 	mux.HandleFunc("POST /api/mail/send", auth(s.handleMailSend))
 	mux.HandleFunc("GET /api/audit", auth(s.handleAudit))
+	mux.HandleFunc("GET /api/accounts", auth(s.handleAccountList))
+	mux.HandleFunc("POST /api/accounts/create", auth(s.handleAccountCreate))
+	mux.HandleFunc("POST /api/accounts/password", auth(s.handleAccountPassword))
+	mux.HandleFunc("POST /api/accounts/update", auth(s.handleAccountUpdate))
+	mux.HandleFunc("POST /api/accounts/ban", auth(s.handleAccountBan))
+	mux.HandleFunc("POST /api/accounts/delete", auth(s.handleAccountDelete))
 
 	if webFS != nil {
 		mux.Handle("/", http.FileServer(http.FS(webFS)))

@@ -1,0 +1,143 @@
+// Package license 实现离线授权票据的签发与校验。
+//
+// 票据由离线工具（cmd/license-gen）用 Ed25519 私钥签发，服务端只内置公钥。
+// 因此即使二进制被逆向，也无法伪造新票据；删除票据或篡改内容都会被拒绝。
+package license
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+var (
+	// ErrNoTicket 表示授权文件不存在。
+	ErrNoTicket = errors.New("license: ticket missing")
+	// ErrBadSignature 表示签名不合法或格式损坏。
+	ErrBadSignature = errors.New("license: bad signature")
+	// ErrExpired 表示票据已过期。
+	ErrExpired = errors.New("license: expired")
+)
+
+// Ticket 是离线授权凭证。
+type Ticket struct {
+	Version  int    `json:"v"`
+	Code     string `json:"code"`
+	IssuedAt int64  `json:"issued_at"`
+	ExpireAt int64  `json:"expire_at"`
+	Note     string `json:"note,omitempty"`
+	Sig      string `json:"sig"`
+}
+
+func (t *Ticket) payload() []byte {
+	return []byte(fmt.Sprintf("%d|%s|%d|%d|%s",
+		t.Version, t.Code, t.IssuedAt, t.ExpireAt, t.Note))
+}
+
+// Sign 用私钥签发票据。
+func Sign(t *Ticket, priv ed25519.PrivateKey) error {
+	if len(priv) != ed25519.PrivateKeySize {
+		return errors.New("license: bad private key")
+	}
+	t.Version = 1
+	if t.IssuedAt == 0 {
+		t.IssuedAt = time.Now().Unix()
+	}
+	t.Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, t.payload()))
+	return nil
+}
+
+// Verify 校验签名与有效期。
+func Verify(t *Ticket, pub ed25519.PublicKey, now time.Time) error {
+	if t.Version != 1 {
+		return ErrBadSignature
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return ErrBadSignature
+	}
+	sig, err := base64.StdEncoding.DecodeString(t.Sig)
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		return ErrBadSignature
+	}
+	if !ed25519.Verify(pub, t.payload(), sig) {
+		return ErrBadSignature
+	}
+	if now.Unix() > t.ExpireAt {
+		return ErrExpired
+	}
+	return nil
+}
+
+// Load 从文件读取票据。
+func Load(path string) (*Ticket, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, ErrNoTicket
+	}
+	var t Ticket
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return nil, ErrBadSignature
+	}
+	return &t, nil
+}
+
+// Guard 校验 <rootDir>/data/auth.ticket。
+//
+// 返回 nil 表示放行。调用方在失败时必须静默退出，不要向使用者展示
+// 任何与授权相关的提示——这是产品要求，也避免给破解者提供定位线索。
+func Guard(rootDir string) error {
+	return GuardWith(PublicKey(), rootDir)
+}
+
+// GuardWith 用指定公钥校验，便于测试与灰度切换。
+func GuardWith(pub ed25519.PublicKey, rootDir string) error {
+	if DevMode(rootDir) {
+		return nil
+	}
+	t, err := Load(filepath.Join(rootDir, "data", "auth.ticket"))
+	if err != nil {
+		return err
+	}
+	return Verify(t, pub, time.Now())
+}
+
+// GuardConfig 按配置文件路径推导项目根目录后再校验授权。
+//
+// 三个服务都以 “项目根/config.yaml” 的方式启动，票据固定放在 <root>/data/auth.ticket。
+func GuardConfig(configPath string) error {
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
+	}
+	return Guard(filepath.Dir(abs))
+}
+
+// Remaining 返回票据剩余时长，便于内部巡检判断是否需要提前预警。
+func Remaining(rootDir string) (time.Duration, error) {
+	t, err := Load(filepath.Join(rootDir, "data", "auth.ticket"))
+	if err != nil {
+		return 0, err
+	}
+	if err := Verify(t, PublicKey(), time.Now()); err != nil {
+		return 0, err
+	}
+	return time.Until(time.Unix(t.ExpireAt, 0)), nil
+}
+
+// DevMode 允许开发者在本机跳过校验，方便调试。
+//
+// 触发方式：环境变量 RF4_SKIP_LICENSE=1，或存在 data/.devmode 文件。
+func DevMode(rootDir string) bool {
+	if os.Getenv("RF4_SKIP_LICENSE") == "1" {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "data", ".devmode")); err == nil {
+		return true
+	}
+	return false
+}
