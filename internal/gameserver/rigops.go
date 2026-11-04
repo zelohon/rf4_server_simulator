@@ -1309,7 +1309,7 @@ func (s *Server) rigItemMutate(ctx context.Context, rodGUID string, slot *int64,
 	}
 
 	fields[idx].Op = "VAL"
-	fields[idx].Val = buildRig153Full(name, curType, comps, curDepth, rigClipOf(stored), rigBaitMountOf(stored))
+	fields[idx].Val = buildRig153Like(stored, name, curType, comps, curDepth, rigClipOf(stored))
 	s.saveItemFields(ctx, row, fields)
 	_ = s.reconcileRigProjection(ctx, rodGUID)
 	if curType != originalType {
@@ -1364,7 +1364,7 @@ func (s *Server) rigItemDeleteComponentAt(ctx context.Context, rodGUID string, s
 	}
 	depth := rigDepthOf(stored, defaultDepthFor(name, curType))
 	fields[idx].Op = "VAL"
-	fields[idx].Val = buildRig153Full(name, curType, comps, depth, rigClipOf(stored), rigBaitMountOf(stored))
+	fields[idx].Val = buildRig153Like(stored, name, curType, comps, depth, rigClipOf(stored))
 	s.saveItemFields(ctx, row, fields)
 	_ = s.reconcileRigProjection(ctx, rodGUID)
 	return true
@@ -1808,7 +1808,7 @@ func (s *Server) liveRig153(ctx context.Context, row *store.Item, storedF5 *prot
 	if saved, ok := s.savedReelClipM(ctx, row.GUID); ok {
 		clipM = saved
 	}
-	return buildRig153Full(name, curType, comps, depth, clipM, rigBaitMountOf(storedF5))
+	return buildRig153Like(storedF5, name, curType, comps, depth, clipM)
 }
 
 // buildRigObject 构造当前钓组的 157 对象。
@@ -1913,7 +1913,7 @@ func (s *Server) rigItem157Fallback(ctx context.Context, uid int64, rigGUID stri
 		clipM = saved
 	}
 	f5 := buildRig153Full(name, rigType, comps, defaultDepthFor(name, rigType), clipM,
-		s.baitMountFor(ctx, rigGUID))
+		s.baitMountFor(ctx, rigGUID), defaultBaitMountAvail)
 	vals := map[int]*proto.Value{
 		3:  proto.Guid(lineGUID),
 		5:  f5,
@@ -2326,6 +2326,9 @@ func hRigBaitMount(ctx *Ctx) ([]byte, bool) {
 	cctx := ctx.Sess.pushCtx()
 	if len(ints) > 1 {
 		mask := clampBaitMount(int64(ints[len(ints)-1]))
+		// 客户端 17/6 只带一个整数，没有语义名；落库前先记一条，
+		// 便于把「卡片 ↔ 数值」对上（BaitMountType 取值尚未逐个确认）。
+		ctx.Log.Info("17/6 挂饵方式", "rod", shortGUID(guids[0]), "mask", mask, "guids", len(guids), "ints", len(ints))
 		_ = srv.DB.UpsertRodSetting(cctx, guids[0], baitMountSettingKey, strconv.FormatInt(mask, 10))
 		if err := srv.applyRigBaitMount(cctx, guids[0], mask); err != nil {
 			ctx.Log.Warn("写入挂饵方式失败", "rod", shortGUID(guids[0]), "mask", mask, "err", err)

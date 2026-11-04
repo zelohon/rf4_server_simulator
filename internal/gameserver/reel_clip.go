@@ -35,18 +35,22 @@ func rigClipOf(v *proto.Value) int64 {
 	return clampReelClipM(int64(u32Of(f.Num)))
 }
 
-// buildRig153WithClip 构造 153 钓组对象（不携带挂饵方式，f9 落 0）。
+// buildRig153WithClip 构造 153 钓组对象（不带挂饵方式，f8/f9 全 0）。
 func buildRig153WithClip(name string, rigType int64, comps map[int64]rigComp, depth, clipM int64) *proto.Value {
-	return buildRig153Full(name, rigType, comps, depth, clipM, 0)
+	return buildRig153Full(name, rigType, comps, depth, clipM, 0, 0)
 }
 
-// buildRig153Full 构造 153 钓组对象，并显式写入挂饵方式位掩码。
+// buildRig153Full 构造 153 钓组对象，写入挂饵方式的两个字段。
 //
-// f9（cfdddmphebg）是客户端的 BaitMountType 掩码：0 = 未选择，
-// 2 = 煮饵沉底、4 = 颗粒，其余位见客户端 kBaitMountType_* 枚举。
-// 客户端读 0 时不提供任何挂饵方式，鱼饵列表也会被判为不适配，
-// 因此重建钓组时必须把玩家已选的值原样带回去，不能每次落 0。
-func buildRig153Full(name string, rigType int64, comps map[int64]rigComp, depth, clipM, baitMount int64) *proto.Value {
+// 客户端 BaitMountType 在 153 里占两个字段，同为 cacifnemgdl 枚举：
+//   - f8（fihgclhkkci）= 当前选中的安装方式，0 = 未选择，安装栏显示「没选择」；
+//   - f9（cfdddmphebg）= 可选安装方式位掩码，0 = 一个选项都没有，弹窗全空。
+//
+// 2026-11-04 实测：f9=126 时「选择安装方式」弹窗列出 6 项
+// （下沉香煮成饵 / 颗粒 / 沉+沉 / 颗+颗 / 颗+沉 / 沉+Pop-up），
+// 玩家点选后客户端回 17/6，携带的是单个位（4/8/16/32/64）。
+// 只把该值写进 f9 时弹窗能开、但安装栏始终显示「没选择」——选中的是 f8。
+func buildRig153Full(name string, rigType int64, comps map[int64]rigComp, depth, clipM, baitMountSel, baitMountAvail int64) *proto.Value {
 	if name == "" {
 		name = "rig_FloatSimple"
 	}
@@ -59,61 +63,89 @@ func buildRig153Full(name string, rigType int64, comps map[int64]rigComp, depth,
 		5: proto.U32(uint32(clampReelClipM(clipM))),
 		6: proto.U32(15),
 		7: proto.U32(15),
-		8: proto.U32(0),
-		9: proto.U32(uint32(clampBaitMount(baitMount))),
+		8: proto.U32(uint32(clampBaitMount(baitMountSel))),
+		9: proto.U32(uint32(clampBaitMount(baitMountAvail))),
 	})
 }
 
-// clampBaitMount 把挂饵方式位掩码收进 u32 低 16 位。
+// buildRig153Like 以已有的 153 对象为模板重建，保留挂饵方式的选中值与可选项。
+// 模板缺失或可选项为 0 时补默认可选项，避免弹窗又变回空白。
+func buildRig153Like(src *proto.Value, name string, rigType int64, comps map[int64]rigComp, depth, clipM int64) *proto.Value {
+	sel, avail := rigBaitMountsOf(src)
+	if avail == 0 {
+		avail = defaultBaitMountAvail
+	}
+	return buildRig153Full(name, rigType, comps, depth, clipM, sel, avail)
+}
+
+// clampBaitMount 把挂饵方式收进 u32；位宽不设上限，
+// 客户端 BaitMountType 是两个独立枚举值（选中 f8 / 可选掩码 f9），
+// 枚举项数量未知，窄掩码会悄悄截掉高位选项。
 func clampBaitMount(v int64) int64 {
 	if v < 0 {
 		return 0
 	}
-	if v > 0xffff {
-		return 0xffff
+	if v > 0xffffffff {
+		return 0xffffffff
 	}
 	return v
 }
 
-// rigBaitMountOf 读 153 对象 f9（挂饵方式位掩码）。
-func rigBaitMountOf(v *proto.Value) int64 {
+// rigBaitMountsOf 读 153 对象的 (选中值 f8, 可选项掩码 f9)。
+func rigBaitMountsOf(v *proto.Value) (sel, avail int64) {
 	if v == nil || v.Kind != proto.KindObj || v.FieldCount() <= 9 {
-		return 0
+		return 0, 0
 	}
-	f := v.Field(9)
-	if f.Num == nil {
-		return 0
+	if f := v.Field(8); f.Num != nil {
+		sel = clampBaitMount(int64(u32Of(f.Num)))
 	}
-	return clampBaitMount(int64(u32Of(f.Num)))
+	if f := v.Field(9); f.Num != nil {
+		avail = clampBaitMount(int64(u32Of(f.Num)))
+	}
+	return sel, avail
 }
 
-// setRigBaitMount 就地改写 153 对象 f9。
-func setRigBaitMount(v *proto.Value, mask int64) {
+// rigBaitMountSelOf 读 153 对象 f8（当前选中的挂饵方式）。
+func rigBaitMountSelOf(v *proto.Value) int64 {
+	sel, _ := rigBaitMountsOf(v)
+	return sel
+}
+
+// setRigBaitMountSel 就地改写 153 对象 f8。
+func setRigBaitMountSel(v *proto.Value, sel int64) {
+	if v == nil || v.Kind != proto.KindObj || v.FieldCount() <= 8 {
+		return
+	}
+	v.Fields[8].Num = ptrU64(uint64(clampBaitMount(sel)))
+}
+
+// setRigBaitMountAvail 就地改写 153 对象 f9。
+func setRigBaitMountAvail(v *proto.Value, avail int64) {
 	if v == nil || v.Kind != proto.KindObj || v.FieldCount() <= 9 {
 		return
 	}
-	v.Fields[9].Num = ptrU64(uint64(clampBaitMount(mask)))
+	v.Fields[9].Num = ptrU64(uint64(clampBaitMount(avail)))
 }
 
 const baitMountSettingKey = "baitmount"
 
-// defaultBaitMountMask 是钓组渲染时给未选择过的竿用的挂饵方式位掩码。
-// 客户端读到 0 会认为钓组没有安装方式：安装弹窗为空、鱼饵列表全部不适配。
-// 先在已确认可用的取值上放开，玩家一旦自己选过就以玩家选择为准。
-var defaultBaitMountMask int64 = 0
+// defaultBaitMountAvail 是「可选安装方式」的默认掩码。
+// 全 1：客户端自己按竿型 + 已挂鱼饵筛掉不适用的项，服务端不再猜位宽。
+// 2026-11-04 实测 126 只覆盖低位（下沉煮饵/颗粒族），0x1F80 只覆盖人造玉米族，
+// 都会让弹窗缺项；全 1 时弹窗给出该钓组完整的一组，玩家选中后按 f8 记忆。
+var defaultBaitMountAvail int64 = 0xffffffff
 
-// baitMountFor 返回渲染钓组时应写入 f9 的挂饵方式：
-// 玩家选过的值优先，没选过时取默认掩码。
+// baitMountFor 返回渲染钓组时应写入 f8 的选中值：玩家选过的优先，否则 0（未选择）。
 func (s *Server) baitMountFor(ctx context.Context, rodGUID string) int64 {
 	if v, ok := s.savedBaitMount(ctx, rodGUID); ok {
 		return v
 	}
-	return defaultBaitMountMask
+	return 0
 }
 
-// applyRigBaitMount 把挂饵方式写进竿实例的 153 对象（f9），并刷新版本戳。
-// 17/6 已经有响应快照，客户端的安装栏直接读这里落库的值。
-func (s *Server) applyRigBaitMount(ctx context.Context, rodGUID string, mask int64) error {
+// applyRigBaitMount 把玩家选中的安装方式写进竿实例 153.f8，并刷新版本戳。
+// f9（可选项）保持不变，否则弹窗会只剩玩家刚点的那一项。
+func (s *Server) applyRigBaitMount(ctx context.Context, rodGUID string, sel int64) error {
 	row, err := s.DB.GetItemByGUID(ctx, rodGUID)
 	if err != nil || row == nil {
 		return err
@@ -126,7 +158,10 @@ func (s *Server) applyRigBaitMount(ctx context.Context, rodGUID string, mask int
 	if idx < 0 || idx >= len(fields) || fields[idx].Val == nil {
 		return nil
 	}
-	setRigBaitMount(fields[idx].Val, mask)
+	setRigBaitMountSel(fields[idx].Val, sel)
+	if _, avail := rigBaitMountsOf(fields[idx].Val); avail == 0 {
+		setRigBaitMountAvail(fields[idx].Val, defaultBaitMountAvail)
+	}
 	s.saveItemFields(ctx, row, fields)
 	return nil
 }
