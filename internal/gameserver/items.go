@@ -59,6 +59,7 @@ var categoryWireClass = map[int64]wireClassEntry{
 	44: {"fcdgfdomnjm", 160}, // Sbirolino
 	46: {"cilmgoaoofg", 120}, // 成品窝料
 	47: {"eebdgfednim", 700}, // 铃铛/咬钩信号器 dadgbbiijki
+	57: {"fmaajjlcdmc", 167}, // 铅芯线（客户端 emfindpkead；f0=强度）
 	48: {"npnkhkicfkg", 613}, // 渔轮导线环
 	49: {"bnfpgceodij", 616}, // 制动钮
 	50: {"jjikombcnnj", 614}, // 轮手柄
@@ -859,10 +860,16 @@ func netTicksNow() int64 {
 }
 
 // reclassifyStoredItem 把误落成钓线类的物品改写成该类别自己的实例类。
-// 已购工具、材料和铃铛靠这一步恢复实例类型，不必重买。
+// 已购工具、材料、铃铛和铅芯线靠这一步恢复实例类型，不必重买。
 // guid、容器、数量、耐久和工艺保持不变。类别已经对上，或不是钓线回退类时不改。
+//
+// reclassifyCategories 限定允许改写的类别：这些类别的实例在客户端是独立 DTO，
+// 早期没有映射时被创建成钓线类 ohciikgjghe，必须换类才能正常渲染。
+// 新增映射时可把类别加进来，启动修复会对存量物品重写一次。
+var reclassifyCategories = map[int64]bool{41: true, 42: true, 47: true, 57: true}
+
 func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *store.ItemDef) (bool, error) {
-	if it == nil || def == nil || (def.Category != 41 && def.Category != 42 && def.Category != 47) {
+	if it == nil || def == nil || !reclassifyCategories[def.Category] {
 		return false, nil
 	}
 	cls, ok := categoryWireClass[def.Category]
