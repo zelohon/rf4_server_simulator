@@ -44,8 +44,10 @@ func TestDynamicProtocolHandlersShapeAndEcho(t *testing.T) {
 		if got := f0.StrOr(); got != "loc12_01" {
 			t.Fatalf("1/10 f0=%q, 期望 loc12_01", got)
 		}
-		if grid := dec.Field(1).Val; grid == nil || grid.Kind != proto.KindArgs || grid.ArgCodeStr() != "15004" {
-			t.Fatalf("1/10 f1 应为 args(15004)，实得 %#v", grid)
+		if grid := dec.Field(1).Val; grid == nil || grid.Kind != proto.KindNull {
+			// 客户端 4.0.25034 不认识 15004，连空的 args(15004) 都会抛
+			// GetType not found 并断线，所以默认只回 f1=null。
+			t.Fatalf("1/10 f1 应为 null，实得 %#v", grid)
 		}
 		if reason := srv.dispatch.checkRegisteredResponse(1, 10, body, srv.Table()); reason != "" {
 			t.Fatalf("1/10 合同守卫误拒: %s", reason)

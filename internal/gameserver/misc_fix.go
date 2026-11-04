@@ -23,6 +23,7 @@ func init() {
 		d.Register(3, 21, hChangeRegion)
 		d.Register(3, 23, hVerifyEmail)
 		d.Register(24, 10, hSocialPublic)
+		d.Register(24, 1, hSocialMove)
 		d.Register(24, 2, hSocialCurrent)
 		d.Register(24, 3, hSocialCurrent)
 	})
@@ -358,6 +359,25 @@ func hSocialCurrent(ctx *Ctx) ([]byte, bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+// hSocialMove 处理 24/1 social/move：客户端在上船、跨水域时上报目标频道名。
+//
+// 只记录会话频道，响应回 null。回完整频道对象 godhiicbgng 时客户端会认为移动
+// 未生效，以约 16ms 间隔持续重发并最终断开连接；回 null 时只发一次。
+func hSocialMove(ctx *Ctx) ([]byte, bool) {
+	name := argFirstStr(ctx.Tree)
+	ch := sessChannel(ctx.Sess)
+	if name == "" {
+		name = ch.Name
+	}
+	ctx.Sess.SetState("channel", map[string]any{
+		"name":    name,
+		"region":  ch.Region,
+		"users":   ch.Users,
+		"private": false,
+	})
+	return []byte{0x00}, true
 }
 
 // hSocialPublic 处理 24/10 公聊，命令本身不返回响应。

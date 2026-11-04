@@ -172,17 +172,15 @@ func (s *Server) pickStationTicket(ctx *Ctx, station uint64) *proto.Value {
 
 // startTicketRent 写入"已租用"状态并落库；返回是否发生改动。
 //
-// 租期默认取票定义里的 gloegohmand（分钟），可用运行参数 boat_rent_minutes
-// 覆盖（管理后台 /api/tunables，用于短租期测试）。
+// 租期只取票定义里的 gloegohmand（分钟）。客户端会拿时效对象的 f3 与物品定义
+// 比对，两者不一致时 BoatWatchDog 判定激活失败，以约 16ms 间隔重发 3/7，
+// 表现为买完票按 E 上船黑屏，所以这里不能用运行参数覆盖租期。
 func (s *Server) startTicketRent(ctx *Ctx, row *store.Item, def *store.ItemDef) bool {
 	minutes := uint64(1440)
 	if def != nil {
 		if v, ok := defAttrU64(def, boatTicketDurationAttr); ok && v > 0 {
 			minutes = v
 		}
-	}
-	if v := s.tunableF("boat_rent_minutes", 0); v > 0 {
-		minutes = uint64(v)
 	}
 	db := s.DB
 

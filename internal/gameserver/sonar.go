@@ -231,10 +231,11 @@ func makeSonarCell(echoes []*proto.Value) (*proto.Value, error) {
 }
 
 func makeEmptySonarResponse(systemID string) (*proto.Value, error) {
-	code := sonarCellArgCode
+	// 不能带 args(15004)：解码 args 时会先按 code 解析元素类型，客户端没有
+	// 15004，哪怕 0 个元素也会抛 GetType not found 并断开连接。
 	return wiregen.MakeObj(sonarResponseClass, map[int]*proto.Value{
 		0: proto.StrVal(systemID),
-		1: proto.Args(&code),
+		1: proto.Null(),
 	})
 }
 
@@ -297,5 +298,11 @@ func synthesizeSonar(systemID string, profile *sonarProfile, rng *rand.Rand) (*p
 }
 
 func (s *Server) sonarResponse(ctx context.Context, systemID string) (*proto.Value, error) {
+	// 客户端 4.0.25034 的响应类型表里没有 15004，发回波网格会在解码时抛
+	// "GetType not found: 15004" 并断开连接（上船、切图后反复重连）。
+	// 默认只回 15003 空网格；需要回波时用运行参数 sonar_echo=1 打开。
+	if s.tunableF("sonar_echo", 0) < 1 {
+		return makeEmptySonarResponse(systemID)
+	}
 	return synthesizeSonar(systemID, s.sonarProfileFor(ctx, systemID), newSonarRand())
 }
