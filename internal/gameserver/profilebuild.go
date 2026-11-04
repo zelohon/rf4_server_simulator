@@ -65,15 +65,13 @@ func build315() *proto.Value {
 	})
 }
 
-// BuildStats322 钓鱼统计块（f0=最大渔获 g）。
-func BuildStats322(ctx context.Context, db *store.DB, uid int64) *proto.Value {
-	maxW := int64(0)
-	if db != nil {
-		// 简化：MAX(catch_log.weight_g)
-		_ = db.SQL.QueryRowContext(ctx, `SELECT COALESCE(MAX(weight_g),0) FROM catch_log WHERE uid=?`, uid).Scan(&maxW)
-	}
+// BuildStats322 构造档案内的状态块。
+// f0 不是最大渔获重量，而是客户端世界时钟的游戏日内分钟；客户端在
+// 接收 307 后以它校准 24 倍速时钟。把鱼重写进这里会导致篝火等所有
+// 依赖世界时钟的功能把鱼重误当成时间。
+func BuildStats322(_ context.Context, _ *store.DB, _ int64) *proto.Value {
 	return wiregen.MustMakeObj("kkmhfbeldpg", map[int]*proto.Value{
-		0: proto.U32(uint32(maxW)),
+		0: proto.U32(gameMinuteOfDayAt(time.Now())),
 		4: build315(),
 	})
 }

@@ -32,7 +32,7 @@ var traceHexMax = func() int {
 }()
 
 // traceSkip 排除高频命令，避免 14/7 和 2/2 淹没日志。
-var traceSkip = map[string]bool{"14/7": true, "2/2": true, "2/1": true}
+var traceSkip = map[string]bool{"14/7": true, "2/2": true, "2/1": true, "24/1": true}
 
 // traceHexHead 取字节串前 n 字节的十六进制（超出部分用 …+K 标注长度）。
 func traceHexHead(b []byte, n int) string {

@@ -22,7 +22,7 @@ var PlayerTables = []string{
 	"skill", "skill_node", "player_counters", "player_achievements", "device",
 	"catch_log", "competition", "competition_member", "competition_result", "named_fish", "place_access",
 	"fishing_state", "item_damage_log", "membership_order", "reel_performance",
-	"player_condition",
+	"player_condition", "campfire_state",
 }
 
 // RuntimeTables 是运营/运行时/迁移元数据表，不属于静态资料或玩家存档。

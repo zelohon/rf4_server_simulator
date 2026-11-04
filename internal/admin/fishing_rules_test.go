@@ -15,6 +15,11 @@ import (
 )
 
 func TestFishingRuleSwitchAPIAndRestart(t *testing.T) {
+	for _, key := range []string{"fish_bait_rules_enabled", "fish_distribution_enabled"} {
+		t.Run(key, func(t *testing.T) { testFishingSwitchAPIAndRestart(t, key) })
+	}
+}
+func testFishingSwitchAPIAndRestart(t *testing.T, key string) {
 	db := testDB(t)
 	ctx := context.Background()
 	if err := db.EnsureAdmin(ctx, "admin", "rules-test"); err != nil {
@@ -38,29 +43,29 @@ func TestFishingRuleSwitchAPIAndRestart(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &login) != nil || login.Token == "" {
 		t.Fatalf("login=%s", w.Body)
 	}
-	if _, exists, err := db.TunableGet(ctx, "fish_bait_rules_enabled"); err != nil && !errors.Is(err, sql.ErrNoRows) || exists {
+	if _, exists, err := db.TunableGet(ctx, key); err != nil && !errors.Is(err, sql.ErrNoRows) || exists {
 		t.Fatalf("default should be unset: %v", err)
 	}
-	if got := call("POST", "/api/tunables", "", `{"key":"fish_bait_rules_enabled","value":"1"}`).Code; got != 401 {
+	if got := call("POST", "/api/tunables", "", `{"key":"`+key+`","value":"1"}`).Code; got != 401 {
 		t.Fatalf("unauthenticated=%d", got)
 	}
 	for _, v := range []string{"2", "-1", "true", "NaN", ""} {
-		if got := call("POST", "/api/tunables", login.Token, `{"key":"fish_bait_rules_enabled","value":"`+v+`"}`).Code; got != 400 {
+		if got := call("POST", "/api/tunables", login.Token, `{"key":"`+key+`","value":"`+v+`"}`).Code; got != 400 {
 			t.Fatalf("invalid %q=%d", v, got)
 		}
 	}
 	for _, v := range []string{"1", "0", "1"} {
-		w = call("POST", "/api/tunables", login.Token, `{"key":"fish_bait_rules_enabled","value":"`+v+`"}`)
+		w = call("POST", "/api/tunables", login.Token, `{"key":"`+key+`","value":"`+v+`"}`)
 		if w.Code != 200 {
 			t.Fatalf("save=%d %s", w.Code, w.Body)
 		}
 		assertQueueContains(t, db, "reload_tunables")
-		if got, ok, err := db.TunableGet(ctx, "fish_bait_rules_enabled"); err != nil || !ok || got != v {
+		if got, ok, err := db.TunableGet(ctx, key); err != nil || !ok || got != v {
 			t.Fatalf("saved=%q %v", got, err)
 		}
 	}
 	var audits int
-	if err := db.SQL.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='tunable' AND target='fish_bait_rules_enabled'`).Scan(&audits); err != nil || audits != 3 {
+	if err := db.SQL.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='tunable' AND target=?`, key).Scan(&audits); err != nil || audits != 3 {
 		t.Fatalf("audit=%d %v", audits, err)
 	}
 	path := db.Path
@@ -77,7 +82,7 @@ func TestFishingRuleSwitchAPIAndRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if value, ok, err := reopened.TunableGet(ctx, "fish_bait_rules_enabled"); err != nil || !ok || value != "1" {
+	if value, ok, err := reopened.TunableGet(ctx, key); err != nil || !ok || value != "1" {
 		t.Fatalf("restart lost switch: %q %v", value, err)
 	}
 }

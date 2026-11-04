@@ -3593,8 +3593,8 @@ var ClassMeta = map[string]ClassInfo{
 		{Idx: 12, Name: "chfafilgifj", Label: "", Enum: "", Zh: "systemID 字符串"},
 	}},
 	"ihaaofcmopp": {DTO: "gdalkjnfiep", Fields: []FieldInfo{
-		{Idx: 0, Name: "nhbcnbanpnl", Label: "", Enum: "", Zh: "篝火持续分钟数。"},
-		{Idx: 1, Name: "iingicaldbk", Label: "", Enum: "", Zh: "到期/租用结束时间（FILETIME）"},
+		{Idx: 0, Name: "nhbcnbanpnl", Label: "", Enum: "", Zh: "篝火结束的绝对游戏分钟；客户端与世界时钟当前分钟比较。"},
+		{Idx: 1, Name: "iingicaldbk", Label: "", Enum: "", Zh: "物品实例数组（onobdmohahp[]；继承自 pcnefbpgdhl）"},
 		{Idx: 2, Name: "pbhkmflbgfb", Label: "", Enum: "", Zh: "物品实例数组（onobdmohahp[]；结算基座 pcnefbpgdhl/eegjkjenhoe 消费，与 801 f9 同款）"},
 		{Idx: 3, Name: "iaimladeglm", Label: "", Enum: "", Zh: "Guid 数组"},
 	}},
@@ -4130,7 +4130,7 @@ var ClassMeta = map[string]ClassInfo{
 		{Idx: 2, Name: "jahepkplkpb", Label: "分组", Enum: "", Zh: "分组 key（craft_group_tool / craft_group_material）"},
 	}},
 	"kkmhfbeldpg": {DTO: "hmdkpndnibj", Fields: []FieldInfo{
-		{Idx: 0, Name: "dijnfpacgko", Label: "", Enum: "", Zh: "典型取值： 307,462,609,610,634,642,662,683,710,713"},
+		{Idx: 0, Name: "dijnfpacgko", Label: "", Enum: "", Zh: "世界时钟的游戏日内分钟；307 到达时客户端以此校时。"},
 		{Idx: 1, Name: "idlonejkjfo", Label: "", Enum: "", Zh: "典型取值： 9,0,6,11,4,2,3,5,7,8"},
 		{Idx: 2, Name: "kcffmbgklni", Label: "", Enum: "", Zh: "典型取值： 0"},
 		{Idx: 3, Name: "hdknlnmaibo", Label: "", Enum: "", Zh: "典型取值： 0"},

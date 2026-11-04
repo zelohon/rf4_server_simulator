@@ -212,3 +212,17 @@ func TestMailInfoShapeAndGUID(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestCastLandingPositionFromObject(t *testing.T) {
+	fields := make([]proto.Field, 8)
+	for i := range fields {
+		fields[i] = proto.Field{Op: "U32", Num: ptrU64(0)}
+	}
+	fields[6] = proto.Field{Op: "U32", Num: ptrU64(uint64(proto.F32Bits(123.5)))}
+	fields[7] = proto.Field{Op: "U32", Num: ptrU64(uint64(proto.F32Bits(-45.25)))}
+	obj := proto.Obj("olieodeoaof", 0, fields...)
+	x, z, ok := castLandingPosition(proto.Args524(obj))
+	if !ok || x != 123.5 || z != -45.25 {
+		t.Fatalf("landing=(%v,%v,%v), want=(123.5,-45.25,true)", x, z, ok)
+	}
+}

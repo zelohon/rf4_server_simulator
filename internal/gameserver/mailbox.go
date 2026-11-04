@@ -780,6 +780,10 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 		f := &RolledFish{FishGUID: newFishGUID(), Species: cmd.Species, WeightG: cmd.WeightG, Grade: cmd.Grade, LocLevel: s.currentLevel(cmd.UID)}
 		if f.Species == "" {
 			r := s.rollFish(st.Loc, st.Bait)
+			if r == nil {
+				s.log.Warn("管理指令：当前没有匹配鱼，请指定鱼种", "uid", cmd.UID)
+				return
+			}
 			f.Species = r.Species
 			if f.WeightG == 0 {
 				f.WeightG = r.WeightG

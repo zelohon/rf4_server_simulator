@@ -9,10 +9,11 @@ import (
 )
 
 func registerTimelineHandlers(d *Dispatch) { // fire-and-forget：客户端不等响应，绝不回包
-	d.Register(1, 7, hNoReply)     // game/locale 区域上报
-	d.Register(1, 15, hNoReply)    // game/enter_place_notify 进入地图单向通知
-	d.Register(3, 10, hBoatUseLog) // boat_use 上报类：当前只记录请求体，便于分析上船协议
-	d.Register(1, 18, hBoolTrue)   // game/telemetry 设备指纹 → bool true
+	d.Register(1, 7, hNoReply)        // game/locale 区域上报
+	d.Register(1, 15, hNoReply)       // game/enter_place_notify 进入地图单向通知
+	d.Register(3, 10, hBoatUseLog)    // boat_use 上报类：当前只记录请求体，便于分析上船协议
+	d.Register(3, 11, hCampfireStart) // campfire_start：保存到期时间并返回有效篝火状态
+	d.Register(1, 18, hBoolTrue)      // game/telemetry 设备指纹 → bool true
 
 	// 空集/无数据语义
 	d.Register(6, 2, hNull)           // comp/load 无竞赛 → null

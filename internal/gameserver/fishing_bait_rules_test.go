@@ -82,18 +82,18 @@ func TestFishBaitSwitchFiltersAndRestoresLegacy(t *testing.T) {
 		t.Fatal("legacy fallback changed")
 	}
 	setBaitRuleSwitch(t, s, "1")
-	for _, bait := range []string{"", "missing", "rule_lure", "rule_other"} {
+	for _, bait := range []string{"", "missing", "rule_lure"} {
 		if f := s.rollFish("level_900_rules", bait); f != nil {
 			t.Fatalf("unsupported bait %q produced %s", bait, f.Species)
 		}
 	}
 	for range 32 {
-		if f := s.rollFish("level_900_rules", "rule_worm"); f == nil || f.Species != "c.roach" {
+		if f := s.rollFish("level_900_rules", "rule_worm"); f == nil || (f.Species != "c.roach" && f.Species != "frog") {
 			t.Fatalf("wrong fish: %+v", f)
 		}
 	}
-	if s.rollFish("unknown-map", "rule_worm") != nil {
-		t.Fatal("strict fallback bypassed location")
+	if s.rollFish("unknown-map", "rule_worm") == nil {
+		t.Fatal("bait-only rules must retain water-wide fallback")
 	}
 	// 实钓证据可补充未列出的搭配，但不能绕过明确不吃拟饵的规则。
 	for _, bait := range []string{"rule_lure", "rule_other"} {
@@ -104,7 +104,7 @@ func TestFishBaitSwitchFiltersAndRestoresLegacy(t *testing.T) {
 	if s.rollFish("level_900_rules", "rule_lure") != nil {
 		t.Fatal("evidence bypassed explicit exclusion")
 	}
-	if f := s.rollFish("level_900_rules", "rule_other"); f == nil || f.Species != "c.roach" {
+	if f := s.rollFish("level_900_rules", "rule_other"); f == nil {
 		t.Fatalf("evidence ignored: %+v", f)
 	}
 	for _, q := range []string{

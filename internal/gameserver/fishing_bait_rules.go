@@ -3,7 +3,10 @@ package gameserver
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
+	"math"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -15,6 +18,8 @@ type fishBaitRule struct {
 }
 
 var fishBaitRules = parseFishBaitRules(fishBaitRuleText)
+
+const maxBaitPreference = 1.5 * 1.15
 
 func ruleName(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -137,29 +142,45 @@ func (b ruleBait) matches(term string) bool {
 	return false
 }
 
-// filterFishBaits 只保留有吃饵规则或实钓证据的鱼；明确排除的饵不被证据放行。
+// filterFishBaits 对喜好饵和其他饵分别加权，明确禁饵仍然排除。
 func (s *Server) filterFishBaits(loc, bait string, keys []string, weights []float64) ([]string, []float64) {
-	if bait == "" {
+	return s.filterFishBaitSet(loc, []string{bait}, keys, weights, time.Now())
+}
+
+func (s *Server) filterFishBaitSet(loc string, ids []string, keys []string, weights []float64, now time.Time) ([]string, []float64) {
+	if s.DB == nil {
 		return nil, nil
 	}
 	ctx := s.dbCtx()
-	b := ruleBait{id: bait}
-	var raw string
-	if err := s.DB.SQL.QueryRowContext(ctx, `SELECT COALESCE(c.name_zh,c.name,''),d.category,COALESCE(d.attrs_json,'{}')
-		FROM item_def d LEFT JOIN item_catalog c ON c.item_id=d.item_id WHERE d.item_id=?`, bait).Scan(&b.name, &b.category, &raw); err != nil {
+	var baits []ruleBait
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		b := ruleBait{id: id}
+		var raw string
+		if err := s.DB.SQL.QueryRowContext(ctx, `SELECT COALESCE(c.name_zh,c.name,''),d.category,COALESCE(d.attrs_json,'{}')
+   FROM item_def d LEFT JOIN item_catalog c ON c.item_id=d.item_id WHERE d.item_id=?`, id).Scan(&b.name, &b.category, &raw); err != nil {
+			return nil, nil
+		}
+		if b.category != 17 && b.category != 27 {
+			return nil, nil
+		}
+		var attrs struct {
+			LureType int64 `json:"mbemakijdeh"`
+			BaitType int64 `json:"fopbhlmkcpe"`
+		}
+		if json.Unmarshal([]byte(raw), &attrs) != nil {
+			return nil, nil
+		}
+		b.lureType, b.baitType = attrs.LureType, attrs.BaitType
+		baits = append(baits, b)
+	}
+	if len(baits) == 0 {
 		return nil, nil
 	}
-	if b.category != 17 && b.category != 27 {
-		return nil, nil
-	}
-	var attrs struct {
-		LureType int64 `json:"mbemakijdeh"`
-		BaitType int64 `json:"fopbhlmkcpe"`
-	}
-	if json.Unmarshal([]byte(raw), &attrs) != nil {
-		return nil, nil
-	}
-	b.lureType, b.baitType = attrs.LureType, attrs.BaitType
 	names := map[string]string{}
 	// 后台可向水域添加鱼种，名称也须从其他水域解析，避免遗漏该鱼的禁饵。
 	rows, err := s.DB.SQL.QueryContext(ctx, `SELECT fish_key,fish_zh FROM loc_wiki_fish
@@ -180,48 +201,73 @@ func (s *Server) filterFishBaits(loc, bait string, keys []string, weights []floa
 	if err != nil {
 		return nil, nil
 	}
-	evidence := s.DB.BaitTiers(ctx, bait)
-	localEvidence := map[string]bool{}
-	rows, err = s.DB.SQL.QueryContext(ctx, `SELECT fish_key FROM loc_bait_fish WHERE loc=? AND bait IN (?,?) AND catches>0`, loc, bait, b.name)
-	if err == nil {
+	evidence := make([]map[string]int64, len(baits))
+	localEvidence := make([]map[string]bool, len(baits))
+	for i, b := range baits {
+		evidence[i] = s.DB.BaitTiers(ctx, b.id)
+		localEvidence[i] = map[string]bool{}
+		rows, err = s.DB.SQL.QueryContext(ctx, `SELECT fish_key FROM loc_bait_fish WHERE loc=? AND bait IN (?,?) AND catches>0`, loc, b.id, b.name)
+		if err != nil {
+			continue
+		}
 		for rows.Next() {
 			var key string
 			if rows.Scan(&key) == nil {
-				localEvidence[key] = true
+				localEvidence[i][key] = true
 			}
 		}
 		if rows.Err() != nil {
-			localEvidence = map[string]bool{}
+			localEvidence[i] = map[string]bool{}
 		}
 		rows.Close()
 	}
 	outKeys := make([]string, 0, len(keys))
 	outWeights := make([]float64, 0, len(keys))
+	period := (now.Unix() - worldDayEpochUnix) / (4 * realSecPerGameHour)
 	for i, key := range keys {
 		if weights[i] <= 0 {
 			continue
 		}
 		r := fishBaitRules[ruleName(names[key])]
-		denied, allowed := false, false
-		for _, term := range r.deny {
-			if b.matches(term) {
-				denied = true
+		denied := false
+		best := 0.0
+		preferred := 0
+		for j, b := range baits {
+			for _, term := range r.deny {
+				if b.matches(term) {
+					denied = true
+					break
+				}
+			}
+			if denied {
 				break
 			}
+			allowed := false
+			for _, term := range r.allow {
+				if b.matches(term) {
+					allowed = true
+					break
+				}
+			}
+			score := 0.0
+			variation := fishVariation(fmt.Sprintf("%s/%s/%s/%d", loc, key, b.id, period))
+			if allowed || evidence[j][key] > 0 || localEvidence[j][key] {
+				preferred++
+				score = 1.0 + 0.5*variation
+			} else if b.category == 27 && len(r.allow) > 0 {
+				// 未列出的天然饵保留低概率；无证据的拟饵不跨食性放行。
+				score = 0.08 + 0.04*variation
+			}
+			best = math.Max(best, score)
 		}
-		if denied {
+		if denied || best <= 0 {
 			continue
 		}
-		for _, term := range r.allow {
-			if b.matches(term) {
-				allowed = true
-				break
-			}
+		if preferred > 1 {
+			best *= 1.15
 		}
-		if allowed || evidence[key] > 0 || localEvidence[key] {
-			outKeys = append(outKeys, key)
-			outWeights = append(outWeights, weights[i])
-		}
+		outKeys = append(outKeys, key)
+		outWeights = append(outWeights, weights[i]*best)
 	}
 	return outKeys, outWeights
 }

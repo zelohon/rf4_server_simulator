@@ -11,16 +11,18 @@ import (
 // FishingFish 是 RolledFish 的可持久化快照。恢复 pending 时必须复用原 GUID、
 // 重量与曲线输入，禁止重启后重新 roll。
 type FishingFish struct {
-	FishGUID string  `json:"fish_guid"`
-	Species  string  `json:"species"`
-	Grade    int64   `json:"grade"`
-	WeightG  int64   `json:"weight_g"`
-	LengthM  float64 `json:"length_m"`
-	XP       int64   `json:"xp"`
-	Silver   int64   `json:"silver"`
-	LocLevel string  `json:"loc_level"`
-	NamedID  string  `json:"named_id"`
-	Name     string  `json:"name"`
+	BaitGUIDs  string  `json:"bait_guids,omitempty"`
+	BaitsKnown bool    `json:"baits_known,omitempty"`
+	FishGUID   string  `json:"fish_guid"`
+	Species    string  `json:"species"`
+	Grade      int64   `json:"grade"`
+	WeightG    int64   `json:"weight_g"`
+	LengthM    float64 `json:"length_m"`
+	XP         int64   `json:"xp"`
+	Silver     int64   `json:"silver"`
+	LocLevel   string  `json:"loc_level"`
+	NamedID    string  `json:"named_id"`
+	Name       string  `json:"name"`
 }
 
 // FishingState 是 FishState 的可持久化子集。Keepnet 是 DB 权威缓存，

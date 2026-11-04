@@ -10,6 +10,7 @@ log:
 launcher:
   game_path: ""      # rf4_x64.exe 的绝对路径；也可在控制中心页面保存。
   game_region: "CN" # 启动游戏时传给 -region 的值。
+  hosts_switch: false # true 时：服务启动后自动把 api.rf4game.ru/com 指向 127.0.0.1，launcher 退出时自动还原；需以管理员身份运行 launcher。
 
 sqlite:
   path: "data/rf4server.db"                  # 所有服务进程共享的主数据库。

@@ -610,6 +610,10 @@ func hCastPrepare(ctx *Ctx) ([]byte, bool) {
 	depthCM := st.DepthCM
 	rigType := st.RigType
 	st.mu.Unlock()
+	if err := ctx.Sess.prepareBaitForCast(st, gear); err != nil {
+		ctx.Log.Warn("抛竿前补饵失败", "err", err)
+		return nil, false
+	}
 	// 收敛钓组数据：补齐 f5、rig 行、组件和尖梢。
 	// 尖梢有更新时推送 4/22 全量竿树，因为客户端抛竿前会校验实例 f8。
 	if srv.ensureRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear) {
@@ -649,9 +653,15 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 			st.Spot = spot
 		}
 	}
+	castX, castZ, hasCastPos := castLandingPosition(ctx.Tree)
 	st.mu.Lock()
 	st.GearGuid = gear
+	st.CastPosX, st.CastPosZ, st.HasCastPos = castX, castZ, hasCastPos
 	st.mu.Unlock()
+	if err := ctx.Sess.prepareBaitForCast(st, gear); err != nil {
+		ctx.Log.Warn("抛竿前补饵失败", "err", err)
+		return nil, false
+	}
 	srv.ensureRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear)
 	// 记录钓组类型并读取当前钩上饵；路亚使用独立的咬钩节奏。
 	rigType := int64(0)
@@ -725,6 +735,30 @@ func findObjStr(root *proto.Value, class string) string {
 
 func findObjU32(root *proto.Value, class string) uint64 {
 	return findObjNthU32(root, class, 0)
+}
+
+// castLandingPosition 读取 14/2 olieodeoaof.f6/f7 的实际抛竿落点。
+// 这两列在 wire 上以 U32 承载 F32 位型。
+func castLandingPosition(root *proto.Value) (float64, float64, bool) {
+	obj := findObj(root, "olieodeoaof")
+	if obj == nil {
+		return 0, 0, false
+	}
+	xi := fieldIdxByCS("olieodeoaof", "bopigefkkom")
+	zi := fieldIdxByCS("olieodeoaof", "ceicchfhpld")
+	if xi < 0 || zi < 0 || xi >= obj.FieldCount() || zi >= obj.FieldCount() {
+		return 0, 0, false
+	}
+	xf, zf := obj.Field(xi), obj.Field(zi)
+	if xf.Num == nil || zf.Num == nil {
+		return 0, 0, false
+	}
+	x := float64(math.Float32frombits(uint32(u64Of(xf.Num))))
+	z := float64(math.Float32frombits(uint32(u64Of(zf.Num))))
+	if math.IsNaN(x) || math.IsNaN(z) || math.IsInf(x, 0) || math.IsInf(z, 0) {
+		return 0, 0, false
+	}
+	return x, z, true
 }
 
 // findObjNthByte 取对象第 n 个 BYTE 字段。14/2 的 olieodeoaof.f8 是本次
@@ -828,6 +862,15 @@ func hFishingStep(ctx *Ctx) ([]byte, bool) {
 				}
 			}
 			st.mu.Unlock()
+			if enterWater {
+				if err := ctx.Sess.Srv.consumeCastBait(ctx.Sess, st); err != nil {
+					ctx.Log.Warn("入水窝料扣减失败", "err", err)
+					st.mu.Lock()
+					st.InWater = false
+					st.mu.Unlock()
+					return nil, true
+				}
+			}
 			if needBite {
 				ctx.Log.Info("钓组在水中，补排咬钩", "f5", fmt.Sprintf("0x%X", anim))
 				ctx.Sess.Srv.scheduleBiteForHooked(ctx.Sess, st)

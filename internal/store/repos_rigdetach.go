@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
 
 // 竿组拆卸的存储入口。
 //
@@ -14,6 +17,17 @@ func (d *DB) DetachReturnToBackpack(ctx context.Context, guid string) error {
 		return nil
 	}
 	_, err := d.SQL.ExecContext(ctx,
+		`UPDATE item SET rig_guid=NULL, container='backpack', slot=0 WHERE guid=?`, guid)
+	return err
+}
+
+// DetachReturnToBackpackTx 是 DetachReturnToBackpack 的事务内版本，
+// 供需要与钓组摘除同事务提交的调用方使用。
+func (d *DB) DetachReturnToBackpackTx(ctx context.Context, tx *sql.Tx, guid string) error {
+	if guid == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx,
 		`UPDATE item SET rig_guid=NULL, container='backpack', slot=0 WHERE guid=?`, guid)
 	return err
 }

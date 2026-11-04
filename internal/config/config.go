@@ -100,8 +100,9 @@ type Admin struct {
 
 // Launcher 本地启动器设置。
 type Launcher struct {
-	GamePath   string `yaml:"game_path"`   // rf4_x64.exe 绝对路径
-	GameRegion string `yaml:"game_region"` // 启动参数 -region 的值
+	GamePath    string `yaml:"game_path"`    // rf4_x64.exe 绝对路径
+	GameRegion  string `yaml:"game_region"`  // 启动参数 -region 的值
+	HostsSwitch bool   `yaml:"hosts_switch"` // 开启后：服务启动成功自动把登录域名指向 127.0.0.1，launcher 退出时还原（需管理员权限运行 launcher）
 }
 
 // Load 从 path 读取 YAML 并应用环境变量覆盖；path 为空时只用默认值+环境变量。

@@ -26,7 +26,8 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
 
 @media(max-width:720px){.shell{grid-template-columns:minmax(0,1fr)}.field.span2{grid-column:auto}.toolbar .grow{min-width:100px}.player-hero .actions,.tabs{flex-wrap:wrap}.tabs button{flex:0 0 auto;white-space:nowrap}.nav button{flex:0 0 auto}}
 
-#fishRulesCard .section-head{flex-wrap:wrap}#fishRulesCard p,#fishRulesCard small{overflow-wrap:anywhere}#fishRulesCard p{margin-bottom:0}
+#fishRulesCard .section-head{flex-wrap:wrap}#fishRulesCard .rule-row{padding:12px 0;border-bottom:1px solid var(--line)}#fishRulesCard .rule-row:last-of-type{border-bottom:0}#fishRulesCard .rule-row>div{min-width:0;flex:1 1 220px}#fishRulesCard button{flex:0 0 auto}#fishRulesCard p,#fishRulesCard small{overflow-wrap:anywhere}#fishRulesCard p{margin-bottom:0}
+@media(max-width:720px){#view-fish .fish-layout{grid-template-columns:minmax(0,1fr)!important}}
 
 .tunable-group+.tunable-group{margin-top:16px}.tunable-group h3{font-size:14px;margin:0 0 10px}.tunable-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px 16px}.tunable-field{min-width:0}.tunable-field label{display:block;color:var(--muted);margin-bottom:6px;overflow-wrap:anywhere}.tunable-field>div{display:flex;gap:8px;align-items:center}.tunable-field input{min-width:0;flex:1;width:0;padding:7px 9px}.tunable-field button{flex:none}.section-head{flex-wrap:wrap}
 </style>
@@ -63,7 +64,7 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
     <section class="view on" id="view-dashboard"><div class="grid stats" id="stats"></div><div class="card" style="margin-top:16px"><div class="section-head"><h2>运行参数</h2><small>热更新：修改后 30 秒内生效（部分立即生效）</small></div><div id="tunablesBody"></div></div><div class="card" style="margin-top:16px"><div class="section-head"><h2>快捷入口</h2><small>常用管理动作</small></div><div class="actions"><button class="btn" onclick="go('players')">管理玩家</button><button class="btn alt" onclick="go('stores')">修改库存</button><button class="btn alt" onclick="go('fish')">调整鱼口</button><button class="btn alt" onclick="go('mail')">发送邮件</button></div></div></section>
     <section class="view" id="view-players"><div class="split"><div class="card player-list"><div class="toolbar"><input class="grow" id="playerSearch" placeholder="搜索 UID / 昵称" onkeydown="if(event.key==='Enter')loadPlayers()"><button class="btn sm" onclick="loadPlayers()">搜索</button></div><div id="playerList" style="margin-top:12px"></div></div><div class="card" id="playerDetail"><div class="empty">选择左侧玩家开始管理</div></div></div></section>
     <section class="view" id="view-stores"><div class="card"><div class="toolbar"><select id="storeSelect" class="grow" onchange="loadStoreItems()"></select><input id="storeSearch" placeholder="搜索商品 / 名称" onkeydown="if(event.key==='Enter')loadStoreItems()"><button class="btn" onclick="loadStoreItems()">查询</button></div><div id="storeSummary" class="muted" style="margin:12px 0"></div><div class="table-wrap" id="storeTable"></div></div></section>
-    <section class="view" id="view-fish"><div class="card" id="fishRulesCard" style="margin-bottom:16px"><div class="section-head"><div><h2>新吃饵逻辑 <span class="pill" id="fishRulesBadge">正在读取</span></h2><small>全水域共用，默认关闭；保存后最多 30 秒影响后续判鱼。</small></div><button class="btn alt" id="fishRulesToggle" disabled aria-pressed="false" onclick="toggleFishRules()">正在读取</button></div><p class="muted" id="fishRulesMessage" role="status">正在读取开关。</p><p class="muted">已接入：地图名册、后台启禁、已识别饵料和实钓搭配；没有匹配鱼时不出鱼。</p><p class="muted">待接入：钓点分布、双饵组合、船票与上船、特定动作、海图区号。未识别的搭配暂不放行；GM 指定下一条鱼仍按原规则执行。</p></div><div class="grid" style="grid-template-columns:270px minmax(0,1fr)"><div class="card"><div class="section-head"><h2>水域</h2></div><input id="fishSearch" placeholder="筛选水域" oninput="renderFishAreas()"><div id="fishAreas" style="margin-top:10px;max-height:70vh;overflow:auto"></div></div><div class="card" id="fishEditor"><div class="empty">选择水域配置鱼口</div></div></div></section>
+    <section class="view" id="view-fish"><div class="card" id="fishRulesCard" style="margin-bottom:16px"><div class="section-head"><h2>鱼群规则</h2><small>两个开关独立生效，默认关闭；保存后最多 30 秒影响后续判鱼。</small></div><div class="section-head rule-row"><div><h2>鱼群随机分布 <span class="pill" id="fishDistributionBadge">正在读取</span></h2><p class="muted" id="fishDistributionMessage" role="status">正在读取开关。</p></div><button class="btn alt" id="fishDistributionToggle" disabled aria-pressed="false" onclick="toggleFishRules('distribution')">正在读取</button></div><div class="section-head rule-row"><div><h2>鱼类吃饵偏好 <span class="pill" id="fishRulesBadge">正在读取</span></h2><p class="muted" id="fishRulesMessage" role="status">正在读取开关。</p></div><button class="btn alt" id="fishRulesToggle" disabled aria-pressed="false" onclick="toggleFishRules('bait')">正在读取</button></div><p class="muted">分布关闭时沿用原水域范围；两个开关分别保存。</p></div><div class="grid fish-layout" style="grid-template-columns:270px minmax(0,1fr)"><div class="card"><div class="section-head"><h2>水域</h2></div><input id="fishSearch" placeholder="筛选水域" oninput="renderFishAreas()"><div id="fishAreas" style="margin-top:10px;max-height:70vh;overflow:auto"></div></div><div class="card" id="fishEditor"><div class="empty">选择水域配置鱼口</div></div></div></section>
     <section class="view" id="view-mail"><div class="mail-box"><div class="card"><div class="section-head"><h2>撰写邮件</h2><small>队列约 2 秒内由主服投递</small></div><div class="form-grid" style="grid-template-columns:1fr 1fr"><div class="field"><label>收件人 UID</label><input id="mailUid" type="number"></div><div class="field"><label>快捷载入玩家</label><input id="mailPlayerSearch" placeholder="搜索并回车" onkeydown="if(event.key==='Enter')findMailPlayer()"></div></div><div class="field" style="margin-top:12px"><label>邮件正文</label><textarea id="mailText" placeholder="写给玩家的消息…"></textarea></div><div class="section-head" style="margin-top:14px"><h2>附件</h2><button class="btn alt sm" onclick="addAttachment()">+ 添加附件</button></div><div id="attachments"></div><div class="actions"><button class="btn good" onclick="sendMail()">发送邮件</button><button class="btn alt" onclick="previewMail()">预览</button></div></div><div class="card"><div class="section-head"><h2>发送预览</h2></div><div id="mailPreview" class="empty">填写邮件后点击预览</div><div class="section-head" style="margin-top:20px"><h2>常用模板</h2></div><div class="actions"><button class="btn alt sm" onclick="mailTemplate('补偿')">补偿邮件</button><button class="btn alt sm" onclick="mailTemplate('活动奖励')">活动奖励</button><button class="btn alt sm" onclick="mailTemplate('测试')">测试邮件</button></div></div></div></section>
     <section class="view" id="view-audit"><div class="card"><div class="section-head"><h2>最近操作</h2><small>最新 200 条</small></div><div class="table-wrap" id="auditTable"></div></div></section>
   </main>
@@ -142,11 +143,12 @@ const TUNABLE_DEFS=[
   ['release_xp_ratio','放生经验比例',0.5],
   ['fight_power_scale','搏斗拉力倍率（越低越不易断线）',1],
   ['fish_weight_scale','鱼体重倍率（2=两倍重）',1],
+  ['fish_weight_cap','鱼重受钓具上限限制（0=不限制，倍率可无限放大）',1,'鱼重上限截断'],
   ['settle_scale_debug','结算刻度调试（0=关）',0],
 ];
 async function loadTunables(){
  const t=await api('/api/tunables');
- const groups=[['咬钩与鱼饵',['bite_probability','bite_delay_fixed','bite_delay_scale','bite_delay_max','bite_delay_lure_max','bait_pref_scale','bait_pref_weight_shift']],['鱼体与搏斗',['fish_weight_scale','fight_power_scale']],['经验与结算',['xp_gain','release_xp_ratio','settle_scale_debug']]];
+ const groups=[['咬钩与鱼饵',['bite_probability','bite_delay_fixed','bite_delay_scale','bite_delay_max','bite_delay_lure_max','bait_pref_scale','bait_pref_weight_shift']],['鱼体与搏斗',['fish_weight_scale','fish_weight_cap','fight_power_scale']],['经验与结算',['xp_gain','release_xp_ratio','settle_scale_debug']]];
 
  $('#tunablesBody').innerHTML=groups.map(([title,keys])=>'<section class="tunable-group"><h3>'+title+'</h3><div class="tunable-fields">'+keys.map(key=>{
  const [,label,def]=TUNABLE_DEFS.find(x=>x[0]===key);
@@ -294,23 +296,29 @@ async function resetStoreRow(i){
   await api('/api/stores/items/reset',{method:'POST',body:JSON.stringify({store_id:x.store_id,item_id:x.item_id})});toast('已恢复静态货架：'+x.item_id);await loadStoreItems();
 }
 let FISH_AREAS=[];
-let FISH_RULES_ENABLED=null;
+const FISH_RULE_SWITCHES={
+  distribution:{key:'fish_distribution_enabled',prefix:'fishDistribution',enabled:null,on:'按地图鱼种、所在区域和游戏昼夜变化鱼口，每四个游戏小时重新分布。',off:'沿用现有分布，各处水域可出鱼，不增加点位限制。'},
+  bait:{key:'fish_bait_rules_enabled',prefix:'fishRules',enabled:null,on:'根据钩上饵料筛选鱼种。',off:'沿用现有吃饵逻辑，不增加吃饵限制。'}
+};
 async function loadFishRules(){
-  const button=$('#fishRulesToggle');button.disabled=true;
+  for(const x of Object.values(FISH_RULE_SWITCHES))$('#'+x.prefix+'Toggle').disabled=true;
   try{
-    const values=await api('/api/tunables');FISH_RULES_ENABLED=values.fish_bait_rules_enabled==='1';
-    $('#fishRulesBadge').textContent=FISH_RULES_ENABLED?'已开启':'已关闭';
-    button.textContent=FISH_RULES_ENABLED?'关闭新逻辑':'开启新逻辑';button.setAttribute('aria-pressed',String(FISH_RULES_ENABLED));button.disabled=false;
-    $('#fishRulesMessage').textContent=FISH_RULES_ENABLED?'当前按新规则筛选；上鱼概率和调试预设不能放行不匹配的鱼。':'当前使用旧判鱼流程，饵料主要调整出鱼概率。';
-  }catch(e){FISH_RULES_ENABLED=null;$('#fishRulesBadge').textContent='读取失败';$('#fishRulesMessage').textContent=e.message;button.textContent='暂不可用';}
+    const values=await api('/api/tunables');
+    for(const x of Object.values(FISH_RULE_SWITCHES)){
+      x.enabled=values[x.key]==='1';
+      $('#'+x.prefix+'Badge').textContent=x.enabled?'已开启':'已关闭';
+      const button=$('#'+x.prefix+'Toggle');button.textContent=x.enabled?'关闭':'开启';button.setAttribute('aria-pressed',String(x.enabled));button.disabled=false;
+      $('#'+x.prefix+'Message').textContent=x.enabled?x.on:x.off;
+    }
+  }catch(e){for(const x of Object.values(FISH_RULE_SWITCHES)){x.enabled=null;$('#'+x.prefix+'Badge').textContent='读取失败';$('#'+x.prefix+'Message').textContent=e.message;$('#'+x.prefix+'Toggle').textContent='暂不可用';}}
 }
-async function toggleFishRules(){
-  if(FISH_RULES_ENABLED===null)return;
-  const button=$('#fishRulesToggle');button.disabled=true;
+async function toggleFishRules(kind){
+  const x=FISH_RULE_SWITCHES[kind];if(!x||x.enabled===null)return;
+  for(const item of Object.values(FISH_RULE_SWITCHES))$('#'+item.prefix+'Toggle').disabled=true;
   try{
-    await api('/api/tunables',{method:'POST',body:JSON.stringify({key:'fish_bait_rules_enabled',value:FISH_RULES_ENABLED?'0':'1'})});
+    await api('/api/tunables',{method:'POST',body:JSON.stringify({key:x.key,value:x.enabled?'0':'1'})});
     await loadFishRules();toast('已保存，最多 30 秒影响后续判鱼');
-  }catch(e){toast(e.message,'bad');button.disabled=false;}
+  }catch(e){toast(e.message,'bad');for(const item of Object.values(FISH_RULE_SWITCHES))$('#'+item.prefix+'Toggle').disabled=item.enabled===null;}
 }
 async function loadFishAreas(){
   await loadFishRules();

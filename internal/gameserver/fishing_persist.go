@@ -153,16 +153,18 @@ func rolledFishToStore(f *RolledFish) *store.FishingFish {
 		return nil
 	}
 	return &store.FishingFish{
-		FishGUID: f.FishGUID,
-		Species:  f.Species,
-		Grade:    f.Grade,
-		WeightG:  f.WeightG,
-		LengthM:  f.LengthM,
-		XP:       f.XP,
-		Silver:   f.Silver,
-		LocLevel: f.LocLevel,
-		NamedID:  f.NamedID,
-		Name:     f.Name,
+		BaitGUIDs:  f.BaitGUIDs,
+		BaitsKnown: f.BaitsKnown,
+		FishGUID:   f.FishGUID,
+		Species:    f.Species,
+		Grade:      f.Grade,
+		WeightG:    f.WeightG,
+		LengthM:    f.LengthM,
+		XP:         f.XP,
+		Silver:     f.Silver,
+		LocLevel:   f.LocLevel,
+		NamedID:    f.NamedID,
+		Name:       f.Name,
 	}
 }
 
@@ -171,16 +173,18 @@ func rolledFishFromStore(f *store.FishingFish) *RolledFish {
 		return nil
 	}
 	return &RolledFish{
-		FishGUID: f.FishGUID,
-		Species:  f.Species,
-		Grade:    f.Grade,
-		WeightG:  f.WeightG,
-		LengthM:  f.LengthM,
-		XP:       f.XP,
-		Silver:   f.Silver,
-		LocLevel: f.LocLevel,
-		NamedID:  f.NamedID,
-		Name:     f.Name,
+		BaitGUIDs:  f.BaitGUIDs,
+		BaitsKnown: f.BaitsKnown,
+		FishGUID:   f.FishGUID,
+		Species:    f.Species,
+		Grade:      f.Grade,
+		WeightG:    f.WeightG,
+		LengthM:    f.LengthM,
+		XP:         f.XP,
+		Silver:     f.Silver,
+		LocLevel:   f.LocLevel,
+		NamedID:    f.NamedID,
+		Name:       f.Name,
 	}
 }
 
