@@ -70,6 +70,13 @@ func TestBuildProfile307Membership(t *testing.T) {
 	if f10 != 0 {
 		t.Fatalf("membership=0 时 f10=%d, want 0", f10)
 	}
+
+	// 5) 永久会员 → f10=2，f11=0（不写到到期时间）
+	mk(2, 0)
+	f10, f11 = flags()
+	if f10 != 2 || f11 != 0 {
+		t.Fatalf("永久会员应 f10=2/f11=0，got f10=%d f11=%d", f10, f11)
+	}
 }
 
 // TestGrantMembershipExtends 验证续期是「顺延」而不是「覆盖」。

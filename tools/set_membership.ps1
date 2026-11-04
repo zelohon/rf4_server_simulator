@@ -23,15 +23,15 @@ $players = Invoke-RestMethod -Uri "$base/api/players" -Headers $h
 $players | Format-Table uid, name, level, silver, gold -AutoSize
 
 $uidInput = Read-Host "`n输入要开通会员的 uid"
-$daysInput = Read-Host "天数（0 = 长期，默认 365）"
+$daysInput = Read-Host "天数（0 = 永久，默认 365）"
 if (-not $daysInput) { $daysInput = "365" }
 
 $body = @{ uid = [int64]$uidInput; days = [int]$daysInput } | ConvertTo-Json
 try {
-    $r = Invoke-RestMethod -Uri "$base/api/players/membership" -Method Post -ContentType "application/json" -Headers $h -Body $body
+    $r = Invoke-RestMethod -Uri "$base/api/players/membership/grant" -Method Post -ContentType "application/json" -Headers $h -Body $body
     Write-Host "`n开通成功" -ForegroundColor Green
-    Write-Host "  membership      = $($r.membership)"
-    Write-Host "  到期时间戳       = $($r.membership_expire_at)"
+    Write-Host "  membership      = $($r.membership)   （1=计时 2=永久）"
+    Write-Host "  到期时间戳       = $($r.membership_expire_at)   （永久为 0）"
     Write-Host "  剩余天数         = $($r.days_left)"
 } catch {
     Write-Host "开通失败：$($_.Exception.Message)" -ForegroundColor Red
