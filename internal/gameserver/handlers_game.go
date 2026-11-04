@@ -3,6 +3,7 @@ package gameserver
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"rf4server/internal/proto"
@@ -209,13 +210,17 @@ func hShortcutBind(ctx *Ctx) ([]byte, bool) {
 	if !srv.requireDB(ctx) {
 		return nil, false
 	}
-	slot, _ := ctx.ArgInt(0)
+	slot, validSlot := ctx.ArgInt(0)
 	guids := deepGUIDs(ctx.Tree)
-	g := ""
-	if len(guids) > 0 {
-		g = guids[0]
+	if !validSlot || slot > 2147483647 || len(guids) != 1 {
+		ctx.ReplyFailure("System.ArgumentException", "快捷栏绑定参数无效")
+		return nil, true
 	}
-	_ = srv.DB.BindShortcut(ctx.Sess.pushCtx(), ctx.Sess.Userid, int64(slot), g)
+	g := guids[0]
+	if err := srv.DB.BindShortcut(ctx.Sess.pushCtx(), ctx.Sess.Userid, int64(slot), g); err != nil {
+		ctx.ReplyFailure("System.ArgumentException", "快捷栏物品不可用")
+		return nil, true
+	}
 	body, err := proto.EncodeValue(build136(int64(slot), g), ctx.Sess.Table())
 	if err != nil {
 		return nil, false
@@ -228,8 +233,15 @@ func hShortcutUnbind(ctx *Ctx) ([]byte, bool) {
 	if !srv.requireDB(ctx) {
 		return nil, false
 	}
-	slot, _ := ctx.ArgInt(0)
-	_ = srv.DB.BindShortcut(ctx.Sess.pushCtx(), ctx.Sess.Userid, int64(slot), "")
+	slot, validSlot := ctx.ArgInt(0)
+	if !validSlot || slot > 2147483647 {
+		ctx.ReplyFailure("System.ArgumentException", "快捷栏解绑参数无效")
+		return nil, true
+	}
+	if err := srv.DB.BindShortcut(ctx.Sess.pushCtx(), ctx.Sess.Userid, int64(slot), ""); err != nil {
+		ctx.ReplyFailure("System.InvalidOperationException", "快捷栏解绑未保存")
+		return nil, true
+	}
 	body, err := proto.EncodeValue(build136(int64(slot), ""), ctx.Sess.Table())
 	if err != nil {
 		return nil, false
@@ -610,22 +622,8 @@ func hCastPrepare(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 	}
 
-	// f2 传递钓深：17/12 的厘米值转换为米写入 158.f2；
-	// 未设置时使用默认抛竿深度。
-	depthBits := castDepthBits
-	if depthCM > 0 {
-		depthBits = proto.F32Bits(float32(depthCM) / 100.0)
-	}
-	// f3 = 线末端钩 guid（槽 12 钩 → 路亚拟饵出厂钩回退）
-	hookGUID := srv.mountedHookGuid(ctx.Sess.pushCtx(), gear)
-	obj := wiregen.MustMakeObj("lfnjkiffphn", map[int]*proto.Value{
-		0: proto.Guid(gear),
-		1: proto.U32(castBaseDistanceBits(rigType)),
-		2: proto.U32(depthBits),
-		3: proto.Guid(hookGUID),
-	})
-	body, err := proto.EncodeValue(obj, ctx.Sess.Table())
-	if err != nil {
+	body := castReady158(ctx, gear, depthCM, rigType)
+	if body == nil {
 		return nil, false
 	}
 	return body, true
@@ -656,18 +654,50 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 	st.mu.Unlock()
 	srv.ensureRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear)
 	// 记录钓组类型并读取当前钩上饵；路亚使用独立的咬钩节奏。
+	rigType := int64(0)
 	if row, err := srv.DB.GetItemByGUID(ctx.Sess.pushCtx(), gear); err == nil && row != nil {
 		rt := srv.rigTypeOfItem(ctx.Sess.pushCtx(), row)
+		rigType = rt
 		st.mu.Lock()
 		st.RigType = rt
 		st.mu.Unlock()
 	}
-	if bait := srv.currentBait(ctx.Sess.pushCtx(), gear); bait != "" {
-		st.mu.Lock()
-		st.Bait = bait
-		st.mu.Unlock()
+	// 14/1 给出的是满力度上限；14/2 才携带本次实际落点、动作和出手力度。
+	// 这里只做真实请求诊断，不能把本杆力度写回下一杆的上限。
+	requestedM := throwDistance(ctx.Tree)
+	action := uint32(findObjNthByte(ctx.Tree, "olieodeoaof", 0))
+	profile := srv.castDistanceForRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear, rigType)
+	actionMaxM := profile.DistanceM * castActionFactor(action)
+	powerRatio := 0.0
+	if actionMaxM > 0 {
+		powerRatio = requestedM / actionMaxM
 	}
-	srv.scheduleBite(ctx.Sess, st)
+	ctx.Log.Info("实际抛投请求", "rod", shortGUID(gear), "requested_m", math.Round(requestedM*100)/100,
+		"max_m", math.Round(profile.DistanceM*100)/100, "action", action,
+		"action_factor", math.Round(castActionFactor(action)*1000)/1000,
+		"power_ratio", math.Round(powerRatio*1000)/1000)
+	// 主线版本会无条件记录当前饵，供路亚咬钩规则和持久化状态使用。
+	bait := srv.currentBait(ctx.Sess.pushCtx(), gear)
+	st.mu.Lock()
+	st.Bait = bait
+	st.mu.Unlock()
+	// 水体距离闸门：玩家离水体太远（抛投够不到）时不派鱼。
+	// 只有该地点有水体矩形数据时才判定；没有数据一律放行，避免误伤。
+	st.mu.Lock()
+	hasPos, px, pz, locNow := st.HasPos, st.PosX, st.PosZ, st.Loc
+	st.mu.Unlock()
+	if hasPos {
+		const waterReachM = 15.0
+		nearWater, hasData := waterWithin(locNow, px, pz, waterReachM)
+		ctx.Log.Info("抛竿水体诊断", "loc", locNow, "x", px, "z", pz, "hasData", hasData, "near", nearWater)
+		if hasData && !nearWater {
+			ctx.Log.Info("距水体过远，本杆不派鱼", "loc", locNow, "x", px, "z", pz, "reach", waterReachM)
+		} else {
+			srv.scheduleBite(ctx.Sess, st)
+		}
+	} else {
+		srv.scheduleBite(ctx.Sess, st)
+	}
 
 	// 响应 800.f0 返回当前钓组 157 对象，包含完整竿树和重建后的 f5。
 	cctx := ctx.Sess.pushCtx()
@@ -695,6 +725,24 @@ func findObjStr(root *proto.Value, class string) string {
 
 func findObjU32(root *proto.Value, class string) uint64 {
 	return findObjNthU32(root, class, 0)
+}
+
+// findObjNthByte 取对象第 n 个 BYTE 字段。14/2 的 olieodeoaof.f8 是本次
+// 抛投动作枚举，不能和距离、钓点这些 U32 混读。
+func findObjNthByte(root *proto.Value, class string, n int) uint64 {
+	if o := findObj(root, class); o != nil {
+		seen := 0
+		for i := range o.Fields {
+			if o.Fields[i].Op != "BYTE" || o.Fields[i].Num == nil {
+				continue
+			}
+			if seen == n {
+				return u64Of(o.Fields[i].Num)
+			}
+			seen++
+		}
+	}
+	return 0
 }
 
 // findObjNthU32 取对象第 n 个 U32 字段。14/2 中 loc 是首个非空字符串，
@@ -743,7 +791,7 @@ func findObj(root *proto.Value, class string) *proto.Value {
 
 // fireAndForget14 客户端上报族：只记录不回包。
 func hFishingStep(ctx *Ctx) ([]byte, bool) {
-	// 14/7：obj lobemkloehp f5=anim 位掩码；0x200=浮标立稳（绝不当作起竿）
+	// 14/7：obj lobemkloehp f5=anim 位掩码；0x200=MotionlessInWaterColumn（水中静止）
 	if ctx.Tree != nil {
 		if o := findObj(ctx.Tree, "lobemkloehp"); o != nil && o.FieldCount() > 5 {
 			anim := u32Of(o.Field(5).Num)
@@ -768,7 +816,24 @@ func hFishingStep(ctx *Ctx) ([]byte, bool) {
 			}
 			changed := anim != st.LastAnim
 			st.LastAnim = anim
+			// 0x200/0x400/0x800/0x1000 是不同水层与姿态的“在水中”位族；岸上不会出现。
+			enterWater := false
+			needBite := false
+			if st.CastActive && !st.InWater && anim&rigAnimInWaterMask != 0 {
+				st.InWater = true
+				enterWater = true
+				if st.NeedBite {
+					st.NeedBite = false
+					needBite = true
+				}
+			}
 			st.mu.Unlock()
+			if needBite {
+				ctx.Log.Info("钓组在水中，补排咬钩", "f5", fmt.Sprintf("0x%X", anim))
+				ctx.Sess.Srv.scheduleBiteForHooked(ctx.Sess, st)
+			} else if enterWater {
+				ctx.Log.Info("钓组在水中", "f5", fmt.Sprintf("0x%X", anim))
+			}
 			// 14/7 每帧都会发送，仅在动画位变化时记录日志。
 			if changed {
 				ctx.Log.Info("14/7 钓组动画位", "f5", fmt.Sprintf("0x%X", anim))
@@ -886,6 +951,12 @@ func hFishingLoad(ctx *Ctx) ([]byte, bool) {
 // hFishingEnd 处理 14/4 收竿结算。
 // 结算由 progress_ops.go 的 fishingEndSettle 完成，包括经验、Premium 加成和等级更新。
 func hFishingEnd(ctx *Ctx) ([]byte, bool) {
+	// 收竿：钓组离水，清掉“在水中/挂起”状态。
+	st := ctx.Sess.Srv.stateFor(ctx.Sess.Userid)
+	st.mu.Lock()
+	st.InWater = false
+	st.NeedBite = false
+	st.mu.Unlock()
 	body, ok := ctx.Sess.Srv.fishingEndSettle(ctx)
 	ctx.Log.Info("14/4 收竿", "handled", ok, "bytes", len(body))
 	return body, ok
@@ -932,6 +1003,7 @@ func registerSessionHandlers(d *Dispatch) {
 	d.Register(11, 1, hShortcutSnapshot)
 	d.Register(11, 2, hShortcutBind)
 	d.Register(11, 3, hShortcutUnbind)
+	d.Register(3, 9, hPositionReport) // 位置同步：记录玩家世界坐标
 	d.Register(3, 30, hRigSyncBackpack)
 	d.Register(3, 31, hRigSyncRig)
 	d.Register(3, 37, hPlaceBuyout)

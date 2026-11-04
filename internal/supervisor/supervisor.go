@@ -38,12 +38,12 @@ const (
 
 // Spec 一个受管进程的定义。
 type Spec struct {
-	Name     string // gameserver / gateway / admin
+	Name     string // gameserver / gateway
 	ExeName  string // 可执行文件名（相对 launcher 同目录）
 	Args     []string
 	ObsPort  string // 观测端口（":9502" 形式；健康检查用，空=不检查）
 	LogFile  string
-	Critical bool // true：该进程退出则全组停机（如 admin 无所谓，false 即可）
+	Critical bool // true：该进程退出则全组停机
 }
 
 // ProcInfo 面板展示的进程快照。
@@ -98,11 +98,11 @@ func New(binDir, configPath, logDir string) *Supervisor {
 		procs:  map[string]*proc{},
 		logDir: logDir,
 	}
-	// 启动顺序即依赖顺序：gameserver（隧道服务端）→ gateway（接入）→ admin
+	// 启动顺序即依赖顺序：gameserver（隧道服务端）→ gateway（接入）。
+	// 管理后台 handler 内嵌在 launcher 中，不再作为独立监听进程启动。
 	for _, sp := range []Spec{
 		{Name: "gameserver", ExeName: "gameserver.exe", ObsPort: "9502", LogFile: "gameserver.log"},
 		{Name: "gateway", ExeName: "gateway.exe", ObsPort: "9501", LogFile: "gateway.log"},
-		{Name: "admin", ExeName: "admin.exe", ObsPort: "9503", LogFile: "admin.log"},
 	} {
 		sp.Args = []string{"-config", configPath}
 		p := &proc{spec: sp, state: StateStopped}

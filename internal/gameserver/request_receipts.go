@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	nativeFailureReceipt     = "native-failure-envelope"
 	requestReceiptWait       = 30 * time.Second
 	requestReceiptPoll       = 10 * time.Millisecond
 	requestReceiptStaleAfter = 2 * time.Minute
@@ -31,6 +32,19 @@ type ctxReplyCapture struct {
 	body       []byte
 	present    bool
 	duplicates int
+	failure    bool
+}
+
+func (c *ctxReplyCapture) captureFailure(envelope []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.present {
+		c.duplicates++
+		return
+	}
+	c.present = true
+	c.failure = true
+	c.body = append([]byte(nil), envelope...)
 }
 
 func (c *ctxReplyCapture) capture(body []byte) {
@@ -44,19 +58,20 @@ func (c *ctxReplyCapture) capture(body []byte) {
 	c.body = append([]byte(nil), body...)
 }
 
-func (c *ctxReplyCapture) snapshot() ([]byte, bool, int) {
+func (c *ctxReplyCapture) snapshot() ([]byte, bool, int, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]byte(nil), c.body...), c.present, c.duplicates
+	return append([]byte(nil), c.body...), c.present, c.duplicates, c.failure
 }
 
 // requestExecutionResult 是尚未发送的处理器结果。
 // hasResponse=false 表示无需回包，或处理、校验失败。
 type requestExecutionResult struct {
-	body        []byte
-	hasResponse bool
-	failed      bool
-	errorText   string
+	body          []byte
+	hasResponse   bool
+	failed        bool
+	errorText     string
+	nativeFailure bool
 }
 
 func noResponseResult() requestExecutionResult {
@@ -90,8 +105,12 @@ func (d *Dispatch) executeRequest(ctx *Ctx, interceptReplies bool) requestExecut
 	if h := d.lookup(uint8(ctx.Main), uint8(ctx.Sub)); h != nil {
 		body, handled := h(ctx)
 		if capture != nil {
-			captured, present, duplicates := capture.snapshot()
+			captured, present, duplicates, failure := capture.snapshot()
 			if present {
+				if failure {
+					return requestExecutionResult{body: captured, hasResponse: true,
+						nativeFailure: true, errorText: nativeFailureReceipt}
+				}
 				if duplicates > 0 {
 					ctx.Log.Warn("同一请求调用了多次 Ctx.Reply；仅保留首个响应", "duplicates", duplicates)
 				}
@@ -261,7 +280,8 @@ func (s *Server) replayRequestReceipt(ctx *Ctx, rec *store.RequestReceipt) {
 	if !rec.HasResponse {
 		return
 	}
-	result := requestExecutionResult{body: rec.ResponseBody, hasResponse: true}
+	result := requestExecutionResult{body: rec.ResponseBody, hasResponse: true,
+		nativeFailure: rec.ErrorText == nativeFailureReceipt}
 	if traceCmds {
 		ctx.Log.Info("TRACE 回(回执重放)", "cmd", ctx.Key(), "len", len(result.body),
 			"hex", traceHexHead(result.body, 160))
@@ -273,5 +293,12 @@ func (s *Server) sendRequestResult(ctx *Ctx, result requestExecutionResult) {
 	if !ctx.ExpectResponse || !result.hasResponse {
 		return
 	}
+	if result.nativeFailure {
+		ctx.Sess.SendEnvelope(result.body)
+		return
+	}
 	ctx.Sess.SendEnvelope(proto.BuildResponseEnvelope(ctx.CallID, result.body))
+	for _, fn := range ctx.afterResponse {
+		fn()
+	}
 }

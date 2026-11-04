@@ -50,20 +50,20 @@ func lineLengthOfTestItem(t *testing.T, srv *Server, guid string) int64 {
 	return itemLengthField(row, fields)
 }
 
-func TestBrokenLineDeletesTerminalGearAndKeepsMainLine(t *testing.T) {
+func TestWeakestLeaderBreaksAndKeepsMainLine(t *testing.T) {
 	srv, db := newRigTestServer(t)
 	ctx := context.Background()
 	const uid = int64(1000001)
 
-	rod, err := srv.CreateItem(ctx, uid, "feeder_10125_FD360", "backpack", 1)
+	rod, err := srv.CreateItem(ctx, uid, "tele_10180_4", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, err := srv.CreateItem(ctx, uid, "mono_40853", "backpack", 1)
+	line, err := srv.CreateItem(ctx, uid, "mono_15095", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	leader, err := srv.CreateItem(ctx, uid, "sh_leader_40815", "backpack", 1)
+	leader, err := srv.CreateItem(ctx, uid, "fc_leader_40048", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +75,12 @@ func TestBrokenLineDeletesTerminalGearAndKeepsMainLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bobber, err := srv.CreateItem(ctx, uid, "bob_25001", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sess := newProbeSess(srv)
-	for _, item := range []string{line.GUID, leader.GUID, hook.GUID, bait.GUID} {
+	for _, item := range []string{line.GUID, leader.GUID, hook.GUID, bait.GUID, bobber.GUID} {
 		mountGearForTest(t, srv, sess, rod.GUID, item)
 	}
 	comps := rigSlotGUIDs(t, srv, rod.GUID)
@@ -103,8 +107,8 @@ func TestBrokenLineDeletesTerminalGearAndKeepsMainLine(t *testing.T) {
 	if u64Of(dec.Fields[0].Num) == 0 {
 		t.Fatal("断线响应 f0 应为 true")
 	}
-	if got := dec.Fields[1].GuidHex(); got != lineGUID {
-		t.Fatalf("断线响应 f1=%s，期望 %s", got, lineGUID)
+	if got := dec.Fields[1].GuidHex(); got != leader.GUID {
+		t.Fatalf("断子线响应 f1=%s，期望子线 %s", got, leader.GUID)
 	}
 
 	afterLine, err := db.GetItemByGUID(ctx, lineGUID)
@@ -115,8 +119,14 @@ func TestBrokenLineDeletesTerminalGearAndKeepsMainLine(t *testing.T) {
 		t.Fatalf("断线不应扣耐久: %v -> %v", beforeLine.Durability, afterLine.Durability)
 	}
 	afterLength := lineLengthOfTestItem(t, srv, lineGUID)
-	if afterLength >= beforeLength || afterLength < beforeLength*20/100 {
-		t.Fatalf("断线后剩余长度=%d，原=%d，应在原长度 20%%..原长度-1 之间", afterLength, beforeLength)
+	if afterLength != beforeLength {
+		t.Fatalf("断子线不应扣主线长度: 原=%d 现在=%d", beforeLength, afterLength)
+	}
+	if row, _ := db.GetItemByGUID(ctx, leader.GUID); row != nil {
+		t.Fatal("断子线后子线实例应被删除")
+	}
+	if row, _ := db.GetItemByGUID(ctx, bobber.GUID); row == nil {
+		t.Fatal("断子线后上方浮漂应保留")
 	}
 
 	for _, slot := range []int64{catHook, catLead, catWireLeader, catBait} {
@@ -150,6 +160,53 @@ func TestBrokenLineDeletesTerminalGearAndKeepsMainLine(t *testing.T) {
 	var lineBreaks int64
 	if err := db.SQL.QueryRow(`SELECT value FROM player_counters WHERE uid=? AND key='line_breaks'`, uid).Scan(&lineBreaks); err != nil || lineBreaks != 1 {
 		t.Fatalf("line_breaks 计数=%d err=%v，期望 1", lineBreaks, err)
+	}
+}
+
+func TestMainLineBreakLosesExactlyFiveMeters(t *testing.T) {
+	srv, db := newRigTestServer(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+
+	rod, err := srv.CreateItem(ctx, uid, "tele_10180_4", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := srv.CreateItem(ctx, uid, "mono_15095", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := newProbeSess(srv)
+	mountGearForTest(t, srv, sess, rod.GUID, line.GUID)
+	lineRow, _ := db.GetItemByGUID(ctx, line.GUID)
+	fields, _ := FieldsFromJSON(lineRow.FieldsJSON)
+	if !setItemLengthField(lineRow, fields, 50) {
+		t.Fatal("设置鱼线长度失败")
+	}
+	fj, _ := FieldsToJSON(fields)
+	if err := db.UpdateItemFields(ctx, line.GUID, fj, lineRow.Qty, lineRow.Durability, lineRow.Workmanship, lineRow.RigGUID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 客户端故意报竿断，服务端仍应按同规格“主线优先于竿”判定为断主线。
+	tree := rigRequestTree(t, proto.Guid(rod.GUID), proto.Guid(rod.GUID), proto.U32(1), proto.Null())
+	body, ok := hDynamicRodBreak(&Ctx{Sess: sess, Main: 17, Sub: 9, Tree: tree,
+		DecodeOK: true, ExpectResponse: true, Log: logging.Discard()})
+	if !ok || len(body) == 0 {
+		t.Fatal("17/9 主线断裂未处理")
+	}
+	dec, _, err := proto.DecodeValue(body, 0, srv.Table())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u64Of(dec.Fields[0].Num) == 0 {
+		t.Fatal("主线断裂响应 f0 应为 true")
+	}
+	if got := dec.Fields[1].GuidHex(); got != line.GUID {
+		t.Fatalf("应断主线 %s，实得 %s", line.GUID, got)
+	}
+	if got := lineLengthOfTestItem(t, srv, line.GUID); got != 45 {
+		t.Fatalf("断主线后长度=%d，期望固定扣 5m 后为 45", got)
 	}
 }
 
@@ -295,11 +352,11 @@ func TestLineBreakExhaustsAndDeletesLine(t *testing.T) {
 	srv, db := newRigTestServer(t)
 	ctx := context.Background()
 	const uid = int64(1000001)
-	rod, err := srv.CreateItem(ctx, uid, "feeder_10125_FD360", "backpack", 1)
+	rod, err := srv.CreateItem(ctx, uid, "tele_10180_4", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, err := srv.CreateItem(ctx, uid, "mono_40853", "backpack", 1)
+	line, err := srv.CreateItem(ctx, uid, "mono_15095", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,11 +400,11 @@ func TestBrokenHandRodDeletesFloat(t *testing.T) {
 	ctx := context.Background()
 	const uid = int64(1000001)
 
-	rod, err := srv.CreateItem(ctx, uid, "tele_10012_tl16", "backpack", 1)
+	rod, err := srv.CreateItem(ctx, uid, "tele_10180_4", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, err := srv.CreateItem(ctx, uid, "mono_40853", "backpack", 1)
+	line, err := srv.CreateItem(ctx, uid, "mono_15065", "backpack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

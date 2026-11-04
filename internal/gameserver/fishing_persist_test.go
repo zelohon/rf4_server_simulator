@@ -146,7 +146,7 @@ func TestFishingStateNoSessionThenReconnect(t *testing.T) {
 
 	restarted := newFishingRecoveryServer(t, db)
 	got := restarted.stateFor(uid)
-	restarted.onBiteTimer(uid) // 模拟 timer 到点时玩家仍离线
+	restarted.onBiteTimer(uid, restarted.stateFor(uid).BiteGen) // 模拟 timer 到点时玩家仍离线
 	got.mu.Lock()
 	if !got.CastActive || got.Resolved || !got.FallSeen || !got.RigSettled {
 		got.mu.Unlock()

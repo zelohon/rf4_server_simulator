@@ -95,6 +95,9 @@ func TestTableOwnershipMatchesSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := TableOwnership()
+	if owner["membership_order"] != "player" {
+		t.Fatalf("membership_order 归属=%q，期望 player", owner["membership_order"])
+	}
 	if owner["place_access"] != "player" {
 		t.Fatalf("place_access 归属=%q，期望 player", owner["place_access"])
 	}
@@ -104,7 +107,7 @@ func TestTableOwnershipMatchesSchema(t *testing.T) {
 }
 
 func TestDataIntegrityMigrationCleansAndConstrains(t *testing.T) {
-	db := openIntegrityTestDB(t)
+	db := openCatchHistoryDBAtVersion(t, 7)
 	if _, err := db.SQL.Exec(`
 		DROP INDEX IF EXISTS uq_catch_log_business_key;
 		DROP INDEX IF EXISTS uq_rig_component_guid;
@@ -155,10 +158,13 @@ func TestDataIntegrityMigrationCleansAndConstrains(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM catch_log WHERE source='keep' AND fish_key='roach' AND weight_g=100 AND loc IS NULL`, 1)
 	assertCount(t, db, `SELECT COUNT(*) FROM catch_log WHERE source='keep' AND fish_key='roach' AND weight_g=100 AND loc='lake'`, 1)
 
-	if _, err := db.SQL.Exec(`
-		INSERT INTO catch_log(ts,loc,spot,fish_key,weight_g,source,uid)
-		VALUES(5,NULL,NULL,'roach',100,'keep',1)`); err == nil {
-		t.Fatal("catch_log NULL 业务键必须被唯一索引拒绝")
+	if _, err := db.SQL.Exec(`INSERT INTO catch_log(ts,loc,spot,fish_key,weight_g,source,uid,catch_guid)
+		VALUES(5,NULL,NULL,'roach',100,'keep',1,'new-fish')`); err != nil {
+		t.Fatalf("新鱼不能被旧内容键合并: %v", err)
+	}
+	if _, err := db.SQL.Exec(`INSERT INTO catch_log(ts,source,uid,catch_guid)
+		VALUES(6,'keep',1,'new-fish')`); err == nil {
+		t.Fatal("同一条鱼的重复记录必须被唯一索引拒绝")
 	}
 	if _, err := db.SQL.Exec(`
 		INSERT INTO rig_component(rig_guid,slot,guid,extra)

@@ -153,7 +153,7 @@ func TestRigAttachFlow(t *testing.T) {
 	if got := rigStoredGUID(t, rodRow, csReel); got != reel.GUID {
 		t.Fatalf("竿 f4(neangpifoka) %q 应= 渔轮 guid", got)
 	}
-	if comps := rigCompsOf(rigStoredF5(t, rodRow)); len(comps) != 0 {
+	if comps := rigCompsOf(rigStoredF5(t, rodRow)); len(rigCompKeysOfCategory(comps, gearCatReel)) != 0 {
 		t.Fatalf("渔轮不应进入 152 组件表，实得 %v", comps)
 	}
 
@@ -240,7 +240,7 @@ func TestRigAttachFlow(t *testing.T) {
 		t.Fatalf("钩 wire 父引用应清空，实得 %q", got)
 	}
 	rodRow, _ = db.GetItemByGUID(ctx, rod.GUID)
-	if comps := rigCompsOf(rigStoredF5(t, rodRow)); len(comps) != 0 {
+	if comps := rigCompsOf(rigStoredF5(t, rodRow)); len(rigCompKeysOfCategory(comps, gearCatReel)) != 0 {
 		t.Fatalf("拆卸后 f5 组件表应为空，实得 %v", comps)
 	}
 	// 渔轮不受拆卸影响

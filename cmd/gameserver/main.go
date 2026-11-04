@@ -72,15 +72,20 @@ func main() {
 	} else {
 		log.Info("装配投影回填完成", "rods", n)
 	}
+	if n, path, err := srv.LoadCompatTable(); err != nil {
+		log.Info("工坊兼容表未加载", "err", err)
+	} else {
+		log.Info("工坊兼容表已加载", "alternatives", n, "path", path)
+	}
 	if n, err := srv.RepairReelComponents(ctx); err != nil {
 		log.Warn("渔线轮零件重建失败", "reels", n, "err", err)
 	} else {
 		log.Info("渔线轮零件重建完成", "reels", n)
-	if n, path, err := srv.LoadCompatTable(); err != nil {
-		log.Info("工坊兼容表未加载", "err", err)
-	} else {
-		log.Info("工坊兼容表已加载", "entries", n, "path", path)
 	}
+	if n, err := srv.RebuildReelPerformance(ctx); err != nil {
+		log.Warn("渔线轮物理参数重建失败", "reels", n, "err", err)
+	} else {
+		log.Info("渔线轮物理参数已同步", "reels", n)
 	}
 
 	ln, err := net.Listen("tcp", cfg.Game.Tunnel.Addr)

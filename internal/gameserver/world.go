@@ -125,7 +125,11 @@ func hItemRemove(ctx *Ctx) ([]byte, bool) {
 		}
 	}
 	if len(owned) > 0 {
-		_ = srv.DB.DeleteItems(ctx.Sess.pushCtx(), owned)
+		if err := srv.DB.DeleteItems(ctx.Sess.pushCtx(), owned); err == nil {
+			// 4/21 = “这些物品已移除”推送；商店/邮件删物品也用它。
+			// 不推的话库里删干净了，客户端背包还留着，再点丢弃就是删不存在的 GUID。
+			ctx.Sess.Push4_21(owned)
+		}
 	}
 	return srv.rigSnapshot800(ctx), true
 }

@@ -50,7 +50,7 @@
 ### 其他观测点
 
 - 控制面板 <http://127.0.0.1:9500>：进程状态、内存环形日志（最近 800 行/进程）。
-- 健康与指标：`9501`(gateway) / `9502`(gameserver) / `9503`(admin) 的 `/healthz`、`/metrics`。
+- 健康与指标：`9501`(gateway) / `9502`(gameserver) 的 `/healthz`、`/metrics`；管理后台直接使用 `9500/admin/`。
 - 命令跟踪开关：存在 `data/trace_cmds.on` 或环境变量 `RF4_TRACE_CMDS=1`。
 - 注意：Windows 上 `logs\*.log` 的**目录元数据（大小/时间）会滞后**，
   判断日志是否在写要看文件尾部内容，不要看 `Length`。
@@ -79,7 +79,7 @@
 
 ```powershell
 .\tools\build.ps1            # 只编 gameserver（标准参数：-trimpath -s -w -ldflags version）
-.\tools\build.ps1 all        # gateway/gameserver/admin/seed
+.\tools\build.ps1 all        # gateway/gameserver/seed
 ```
 
 - **必须保留 -s -w**：未 strip 的 26MB 二进制会被 Windows Smart App Control 拦下

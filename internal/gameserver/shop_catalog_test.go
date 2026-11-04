@@ -18,7 +18,8 @@ func TestStoreListUsesCatalogTemplateAndUnknownStoreStaysEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Kind != proto.KindArgs || decoded.ArgCodeStr() != "140" || decoded.ArgCount() != 5 {
+	// 上游货架补齐后，ATM 模板包含六款钱包。
+	if decoded.Kind != proto.KindArgs || decoded.ArgCodeStr() != "140" || decoded.ArgCount() != 6 {
 		t.Fatalf("22/1 模板货架不符: kind=%v code=%q count=%d", decoded.Kind, decoded.ArgCodeStr(), decoded.ArgCount())
 	}
 	first := decoded.ArgItem(0)

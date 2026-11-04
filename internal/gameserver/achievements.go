@@ -53,36 +53,50 @@ func (s *Server) buildFishTrophies323(ctx context.Context, uid int64) (*proto.Va
 	if err != nil {
 		return nil, err
 	}
+
+	// 客户端按水域分组，并在每组内按鱼种匹配唯一一张纪录卡。
 	groups := make(map[string][]store.CatchRecord)
 	for _, r := range rows {
-		if r.FishKey != "" {
-			groups[r.FishKey] = append(groups[r.FishKey], r)
+		if r.FishKey == "" {
+			continue
 		}
+		placeID := r.LocLevel
+		if placeID == "" {
+			placeID = r.Loc
+		}
+		if placeID == "" {
+			continue
+		}
+		groups[placeID] = append(groups[placeID], r)
 	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
+	placeIDs := make([]string, 0, len(groups))
+	for placeID := range groups {
+		placeIDs = append(placeIDs, placeID)
 	}
-	sort.Strings(keys)
-	items := make([]*proto.Value, 0, len(keys))
-	for _, fishKey := range keys {
-		recs := groups[fishKey]
-		sort.SliceStable(recs, func(i, j int) bool {
-			if recs[i].WeightG != recs[j].WeightG {
-				return recs[i].WeightG > recs[j].WeightG
+	sort.Strings(placeIDs)
+
+	items := make([]*proto.Value, 0, len(placeIDs))
+	for _, placeID := range placeIDs {
+		bestByFish := make(map[string]store.CatchRecord)
+		for _, r := range groups[placeID] {
+			prev, exists := bestByFish[r.FishKey]
+			if !exists || r.WeightG > prev.WeightG ||
+				(r.WeightG == prev.WeightG && (r.TS < prev.TS || (r.TS == prev.TS && r.ID < prev.ID))) {
+				bestByFish[r.FishKey] = r
 			}
-			if recs[i].TS != recs[j].TS {
-				return recs[i].TS < recs[j].TS
-			}
-			return recs[i].ID < recs[j].ID
-		})
-		cards := make([]*proto.Value, 0, len(recs))
-		for _, r := range recs {
-			cards = append(cards, recordCard320FromCatch(r))
+		}
+		fishKeys := make([]string, 0, len(bestByFish))
+		for fishKey := range bestByFish {
+			fishKeys = append(fishKeys, fishKey)
+		}
+		sort.Strings(fishKeys)
+		cards := make([]*proto.Value, 0, len(fishKeys))
+		for _, fishKey := range fishKeys {
+			cards = append(cards, recordCard320FromCatch(bestByFish[fishKey]))
 		}
 		items = append(items, wiregen.MustMakeObj("dochkomimic", map[int]*proto.Value{
-			0: proto.StrVal(fishKey),
-			1: proto.Args(nil, cards...),
+			0: proto.StrVal(placeID),
+			1: proto.Args(proto.S("129"), cards...),
 		}))
 	}
 	return proto.Args(proto.S("132"), items...), nil

@@ -83,17 +83,31 @@ func TestGearPhysicsU32F32AndWeakestLink(t *testing.T) {
 	}
 }
 
+func TestGearWeightCapIncludesHookStrengthAndHookSize(t *testing.T) {
+	spec := gearPhysicsSpec{
+		RodPowerKg: 100, LineStrengthKg: 100, LeaderStrengthKg: 100,
+		HookPresent: true, HookStrengthKg: 80, HookLengthMM: 5, HookSize: 12, LineStretch: 0,
+	}
+	if got := gearWeakestPart(spec); got != "rod" {
+		t.Fatalf("最弱断件=%q，期望 rod；鱼钩只限制派鱼口径，不进入用户定义的炸杆链", got)
+	}
+	if got := gearBreakLimitKg(spec); math.Abs(got-100) > 1e-9 {
+		t.Fatalf("承力链限额=%f，期望竿/线/子线 100kg", got)
+	}
+	// 5mm 钩按立方口径上限 = 8 * 5^3 = 1000g，再允许 35% 控鱼余量。
+	if got := gearWeightCapKg(spec); math.Abs(got-1.35) > 1e-9 {
+		t.Fatalf("钩号体重上限=%f kg，期望 1.35kg", got)
+	}
+}
+
 func TestGearWeightCapUsesWeakestLinkAndLineBuffer(t *testing.T) {
 	spec := gearPhysicsSpec{
 		RodPowerKg: 14.0102, LineStrengthKg: 10.5,
 		LeaderStrengthKg: 13.3, ReelDragKg: 6.4, LineStretch: 0.85,
 	}
-	buf := effectiveLineBuffer(spec.LineStretch)
-	if math.Abs(buf-0.575) > 1e-9 {
-		t.Fatalf("line buffer=%f，期望 0.575", buf)
-	}
 	// 摩擦 6.4kg 低于鱼线 10.5kg，但摩擦是打滑力，上限跟鱼线走。
-	want := 10.5 * (1.0 / 0.35) / 0.575
+	// 派鱼允许超过最弱承力件 35%，给控鱼留操作空间。
+	want := 10.5 * gearOverloadFactor
 	if got := gearWeightCapKg(spec); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("gear cap=%f，期望 %f", got, want)
 	}
@@ -163,9 +177,9 @@ func TestRigGearIDsReadsCurrentRodFieldsAndComponents(t *testing.T) {
 		t.Fatalf("rig gear IDs=%+v", ids)
 	}
 	capKg, _, weakest := srv.gearWeightCapForRig(ctx, uid, rodGUID)
-	wantCap := 10.5 * (1.0 / 0.35) / 0.575
-	if math.Abs(capKg-wantCap) > 1e-4 || weakest != "line" {
-		t.Fatalf("当前钓组 cap=%f weakest=%q，期望 cap=%f weakest=line", capKg, weakest, wantCap)
+	wantCap := (6.4 * 1.4) * gearOverloadFactor
+	if math.Abs(capKg-wantCap) > 1e-4 || weakest != "reel" {
+		t.Fatalf("当前钓组 cap=%f weakest=%q，期望 cap=%f weakest=reel", capKg, weakest, wantCap)
 	}
 
 	// 实例耐久必须参与服务端最弱环计算：半耐久鱼线 10.5kg -> 5.25kg。
@@ -173,7 +187,7 @@ func TestRigGearIDsReadsCurrentRodFieldsAndComponents(t *testing.T) {
 		t.Fatal(err)
 	}
 	capKg, _, weakest = srv.gearWeightCapForRig(ctx, uid, rodGUID)
-	wantCap = 5.25 * (1.0 / 0.35) / 0.575
+	wantCap = 5.25 * gearOverloadFactor
 	if math.Abs(capKg-wantCap) > 1e-4 || weakest != "line" {
 		t.Fatalf("磨损后 cap=%f weakest=%q，期望 cap=%f weakest=line", capKg, weakest, wantCap)
 	}

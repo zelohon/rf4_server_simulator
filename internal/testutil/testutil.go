@@ -26,9 +26,10 @@ const TestPSK = "test-psk"
 
 // GatewayHandle 进程内网关句柄。
 type GatewayHandle struct {
-	LoginURL string
-	RealAddr string
-	Store    *gateway.MemStore
+	LoginURL      string
+	LoginPlainURL string
+	RealAddr      string
+	Store         *gateway.MemStore
 }
 
 // StartGateway 在随机端口装配一个进程内网关（MemStore + 指定隧道地址）。
@@ -36,6 +37,7 @@ func StartGateway(t *testing.T, tunnelAddr, psk string) *GatewayHandle {
 	t.Helper()
 	cfg := config.Gateway{
 		LoginAddr:             "127.0.0.1:0",
+		LoginCompatAddr:       "127.0.0.1:0",
 		RealtimeAddr:          "127.0.0.1:0",
 		CertFile:              t.TempDir() + "/cert.pem",
 		KeyFile:               t.TempDir() + "/key.pem",
@@ -73,9 +75,10 @@ func StartGateway(t *testing.T, tunnelAddr, psk string) *GatewayHandle {
 		tm.Close()
 	})
 	return &GatewayHandle{
-		LoginURL: "https://" + login.Addr() + "/login.php",
-		RealAddr: rt.RealAddr(),
-		Store:    store,
+		LoginURL:      "https://" + login.Addr() + "/login.php",
+		LoginPlainURL: "http://" + login.CompatAddr() + "/login.php",
+		RealAddr:      rt.RealAddr(),
+		Store:         store,
 	}
 }
 

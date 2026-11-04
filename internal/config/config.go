@@ -16,15 +16,16 @@ import (
 
 // Config 全量配置。每个进程只读自己关心的部分。
 type Config struct {
-	Env     string  `yaml:"env"` // dev | prod
-	Log     Log     `yaml:"log"`
-	SQLite  SQLite  `yaml:"sqlite"`
-	Gateway Gateway `yaml:"gateway"`
-	Game    Game    `yaml:"game"`
-	Admin   Admin   `yaml:"admin"`
+	Env      string   `yaml:"env"` // dev | prod
+	Log      Log      `yaml:"log"`
+	SQLite   SQLite   `yaml:"sqlite"`
+	Gateway  Gateway  `yaml:"gateway"`
+	Game     Game     `yaml:"game"`
+	Admin    Admin    `yaml:"admin"`
+	Launcher Launcher `yaml:"launcher"`
 }
 
-// SQLite 本地单文件数据库（三进程共享，WAL 并发）。
+// SQLite 本地单文件数据库（多进程共享，WAL 并发）。
 type SQLite struct {
 	Path       string `yaml:"path"`        // 主库，例如 data/rf4server.db
 	StaticPath string `yaml:"static_path"` // 只读静态配置库，例如 server_data/static.sqlite3
@@ -42,8 +43,9 @@ type Tunnel struct {
 }
 
 type Gateway struct {
-	LoginAddr             string  `yaml:"login_addr"`    // HTTPS 登录监听，如 :443
-	RealtimeAddr          string  `yaml:"realtime_addr"` // realtime TCP 监听，如 :9341
+	LoginAddr             string  `yaml:"login_addr"`        // HTTPS 登录监听，如 :443
+	LoginCompatAddr       string  `yaml:"login_compat_addr"` // 可选：旧版 CN 客户端的明文 HTTP 登录兼容口，如 127.0.0.1:7515
+	RealtimeAddr          string  `yaml:"realtime_addr"`     // realtime TCP 监听，如 :9341
 	CertFile              string  `yaml:"cert_file"`
 	KeyFile               string  `yaml:"key_file"`
 	AdvertiseHost         string  `yaml:"advertise_host"`          // 写入 <logon><host> 的地址
@@ -89,11 +91,17 @@ func (g *Game) KeepaliveInterval() time.Duration {
 }
 
 type Admin struct {
-	HTTPAddr  string `yaml:"http_addr"` // 管理后台监听，如 :8080
+	HTTPAddr  string `yaml:"http_addr"` // 仅 cmd/admin 独立调试监听，如 :8080
 	JWTSecret string `yaml:"jwt_secret"`
 	ObsAddr   string `yaml:"obs_addr"`
 	Username  string `yaml:"username"` // 管理员账号（以配置为准，启动时同步）
 	Password  string `yaml:"password"` // 管理员密码（明文进 yaml，注意文件权限）
+}
+
+// Launcher 本地启动器设置。
+type Launcher struct {
+	GamePath   string `yaml:"game_path"`   // rf4_x64.exe 绝对路径
+	GameRegion string `yaml:"game_region"` // 启动参数 -region 的值
 }
 
 // Load 从 path 读取 YAML 并应用环境变量覆盖；path 为空时只用默认值+环境变量。
@@ -117,8 +125,9 @@ func Load(path string) (*Config, error) {
 
 func defaults() *Config {
 	return &Config{
-		Env: "dev",
-		Log: Log{Level: "info", Format: "text"},
+		Env:      "dev",
+		Log:      Log{Level: "info", Format: "text"},
+		Launcher: Launcher{GameRegion: "CN"},
 		SQLite: SQLite{
 			Path:       "data/rf4server.db",
 			StaticPath: "server_data/static.sqlite3",
@@ -199,6 +208,8 @@ func (c *Config) applyEnvOverrides() {
 	envStr("RF4_GAME_TUNNEL_PSK", &c.Game.Tunnel.PSK)
 	envStr("RF4_ADMIN_HTTP_ADDR", &c.Admin.HTTPAddr)
 	envStr("RF4_ADMIN_JWT_SECRET", &c.Admin.JWTSecret)
+	envStr("RF4_GAME_CLIENT_PATH", &c.Launcher.GamePath)
+	envStr("RF4_GAME_CLIENT_REGION", &c.Launcher.GameRegion)
 	envFloat("RF4_GATEWAY_KEEPALIVE_SEC", &c.Gateway.TransportKeepaliveSec)
 	envFloat("RF4_KEEPALIVE_INTERVAL_SEC", &c.Gateway.KeepaliveInterval)
 	envFloat("RF4_BITE_PROBABILITY", &c.Gateway.BiteProbability)

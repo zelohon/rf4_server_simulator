@@ -64,6 +64,21 @@ func TestFindObjSecondU32ForCastSpot(t *testing.T) {
 	}
 }
 
+func TestFindCastActionByte(t *testing.T) {
+	obj := proto.Obj("olieodeoaof", 0,
+		proto.Field{Op: "U32", Num: ptrU64(uint64(proto.F32Bits(18.5)))},
+		proto.Field{Op: "BYTE", Num: ptrU64(2)},
+		proto.Field{Op: "BYTE", Num: ptrU64(7)},
+	)
+	tree := proto.Args524(obj)
+	if got := findObjNthByte(tree, "olieodeoaof", 0); got != 2 {
+		t.Fatalf("action=%d，期望首个 BYTE=2", got)
+	}
+	if got := findObjNthByte(tree, "olieodeoaof", 1); got != 7 {
+		t.Fatalf("action=%d，期望第二个 BYTE=7", got)
+	}
+}
+
 func TestFishingTickRecomputesSettledAndLocation(t *testing.T) {
 	srv, _ := newDetachTestServer(t)
 	sess := newProbeSess(srv)
@@ -73,15 +88,18 @@ func TestFishingTickRecomputesSettledAndLocation(t *testing.T) {
 		fields[6] = proto.Field{Op: "STR", Str: strPtr(loc)}
 		return proto.Args524(proto.Obj("lobemkloehp", 0, fields...))
 	}
+	st := srv.stateFor(sess.Userid)
+	st.mu.Lock()
+	st.CastActive = true
+	st.mu.Unlock()
 	if _, ok := hFishingStep(&Ctx{Sess: sess, Main: 14, Sub: 7,
 		Tree: makeTick(0x200, "loc12_01"), DecodeOK: true, Log: logging.Discard()}); !ok {
 		t.Fatal("14/7 未处理")
 	}
-	st := srv.stateFor(sess.Userid)
 	st.mu.Lock()
-	if !st.RigSettled || st.Loc != "loc12_01" {
+	if !st.RigSettled || !st.InWater || st.Loc != "loc12_01" {
 		st.mu.Unlock()
-		t.Fatalf("首帧 settled=%v loc=%q", st.RigSettled, st.Loc)
+		t.Fatalf("首帧 settled=%v in_water=%v loc=%q", st.RigSettled, st.InWater, st.Loc)
 	}
 	st.mu.Unlock()
 
@@ -119,7 +137,7 @@ func TestCatchLogWrittenOnceOnKeep(t *testing.T) {
 	ctx := context.Background()
 	const uid = int64(1000001)
 	f := &RolledFish{FishGUID: "22222222222222222222222222222222", Species: "c.roach", Grade: 1, WeightG: 186, LengthM: 0.1981, LocLevel: "level_019_american_pond"}
-	if r := srv.settleCatchXP(ctx, uid, f, "worm_01"); r == nil {
+	if r := srv.settleCatchXP(ctx, uid, f, 1); r == nil {
 		t.Fatal("settleCatchXP 返回 nil")
 	}
 	st := srv.stateFor(uid)

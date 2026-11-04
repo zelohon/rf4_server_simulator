@@ -882,14 +882,15 @@ var partPriceByItemID map[string][2]int64
 // （轴承 845/8、摩擦片 754/7、齿轮 296/5、竿坯 1200/12 …）。
 // workshopPartCategories 允许出现在工坊零件列表里的品类。
 // 4 竿柄 / 5 导环 / 7 轴承 / 8 线杯 / 9 摩擦片 / 10 轮油 /
-// 36 竿坯 / 52 齿轮 / 63 电机 / 81 引擎
+// 34 摇柄 / 36 竿坯 / 52 齿轮 / 63 电机 / 81 引擎
 var workshopPartCategories = map[uint32]bool{
 	4: true, 5: true, 7: true, 8: true, 9: true, 10: true,
-	36: true, 52: true, 63: true, 81: true,
+	34: true, 36: true, 52: true, 63: true, 81: true,
 }
 
 // noReplaceCategories 不允许更换型号、只能修复的零件品类。
-var noReplaceCategories = map[int64]bool{5: true, 7: true, 8: true, 36: true}
+// 轴承和线杯在精确兼容表中有合法替代件，不能在这里硬禁用。
+var noReplaceCategories = map[int64]bool{5: true, 36: true}
 
 var partBasePrice = map[int64][2]int64{
 	4:  {600, 6},   // 竿柄
@@ -1020,7 +1021,9 @@ func compatTablePath() (string, bool) {
 	if p := os.Getenv("RF4_COMPAT_FILE"); p != "" {
 		cands = append(cands, p)
 	}
-	cands = append(cands, "data/compat_parts.json", "server_data/compat_parts.json")
+	cands = append(cands,
+		"data/compat_parts.json", "server_data/compat_parts.json",
+		"../server_data/compat_parts.json", "../../server_data/compat_parts.json")
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		cands = append(cands,
@@ -1052,7 +1055,9 @@ func (s *Server) LoadCompatTable() (int, string, error) {
 	}
 	n := 0
 	for _, byCat := range compatTable {
-		n += len(byCat)
+		for _, ids := range byCat {
+			n += len(ids)
+		}
 	}
 	return n, path, nil
 }
@@ -1089,16 +1094,8 @@ func (s *Server) partAlternatives(ctx context.Context, reelItemID string, part r
 	}
 	out := make([]*proto.Value, 0, 32)
 	seen := map[string]bool{}
-	// 替代品数量上限：摩擦片 3 个，其它品类 4 个（不含当前零件自身那条）。
-	maxAlts := 4
-	if def.Category == 9 {
-		maxAlts = 3
-	}
 	addJob := func(itemID string) {
 		if itemID == "" || seen[itemID] {
-			return
-		}
-		if len(out) >= maxAlts+1 {
 			return
 		}
 		seen[itemID] = true
@@ -1119,8 +1116,29 @@ func (s *Server) partAlternatives(ctx context.Context, reelItemID string, part r
 		}))
 	}
 	addJob(def.ItemID)
-	// 线轴(8)/轴承(7)/杆坯(36) 只允许修复，不提供替代型号。
+	// 导环/杆坯只允许修复；轮子的轴承和线杯按精确兼容表提供替代型号。
 	if noReplaceCategories[def.Category] {
+		return out
+	}
+	// 轮油是通用保养耗材，不受轮子型号前缀限制。静态库中的各品质油均可
+	// 作为替代件，实际品质会进入服务端超载耐久计算。
+	if def.Category == 10 {
+		rows, qerr := s.DB.SQL.QueryContext(ctx, `
+			SELECT item_id FROM item_def WHERE category=10
+			ORDER BY CAST(json_extract(attrs_json,'$.obifdihmcfn') AS INTEGER), numeric_id`)
+		if qerr == nil {
+			var oils []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err == nil {
+					oils = append(oils, id)
+				}
+			}
+			rows.Close()
+			for _, id := range oils {
+				addJob(id)
+			}
+		}
 		return out
 	}
 	if ids, found := s.compatFor(reelItemID, strconv.FormatInt(def.Category, 10)); found {
@@ -1159,6 +1177,7 @@ func (s *Server) partAlternatives(ctx context.Context, reelItemID string, part r
 	}
 	return out
 }
+
 // childCategory 返回子件实例定义里的品类（oinpmjophkh），取不到返回 -1。
 func (s *Server) childCategory(ctx context.Context, v *proto.Value) int64 {
 	if v == nil || v.Kind != proto.KindObj {
@@ -1249,7 +1268,12 @@ func (s *Server) buildPartInstance(ctx context.Context, host *store.Item, sysID,
 	setFloat(csWorkmanship, host.Workmanship)
 	setFloat(csDurability, host.Durability)
 	if idx := fieldIdxByCS(cls.Class, csStateEnum); idx >= 0 {
-		obj.Fields[idx].Num = ptrU64(base)
+		obj.Fields[idx].Num = ptrU64(base | subMountFlag)
+	}
+	// 替换摩擦片时必须把定义中的实际制动力写进 147.f0；只写 numeric_id
+	// 会让客户端显示更换成功，但收到一个 0kg 摩擦片并一直等待有效模型。
+	if def.Category == 9 {
+		setFloat(csDragForce, itemDefF32(def, gearAttrDragMax)*host.Workmanship)
 	}
 	if idx := fieldIdxByCS(cls.Class, csParent); idx >= 0 {
 		obj.Fields[idx].Hex = host.GUID
@@ -1423,6 +1447,15 @@ func hWorkshopOrder(ctx *Ctx) ([]byte, bool) {
 			continue
 		}
 		fields[idx].Val = child
+		// 齿轮决定母轮顶层显示/运算使用的传动比。子件换了而母轮 f0 不变，
+		// 客户端和服务端都会继续使用出厂参数。
+		if def.Category == 52 {
+			if ratio := itemDefF32(def, gearAttrRatio); ratio > 0 {
+				if pidx := fieldIdxByCS(row.WireClass, csStrength); pidx >= 0 {
+					setWireFloat(fields, row.WireClass, pidx, ratio*row.Workmanship)
+				}
+			}
+		}
 		ps, pg := srv.partPrice(cctx, o.SysID, def.Category)
 		silver += ps
 		gold += pg
@@ -1458,6 +1491,8 @@ func hWorkshopOrder(ctx *Ctx) ([]byte, bool) {
 		_ = srv.DB.UpdateBalance(cctx, ctx.Sess.Userid, p.Silver-costSilver, p.Gold, p.Bank)
 		_ = srv.DB.AddTxn(cctx, ctx.Sess.Userid, "workshop_part", "", itemGUID, -costSilver, 0, "silver")
 	}
+	// 版本戳必须严格递增，否则客户端会忽略更新后的物品树，工作坊停在转圈状态。
+	bumpCreatedTicks(fields, row.WireClass)
 	fj, jerr := FieldsToJSON(fields)
 	if jerr != nil {
 		return nil, false
@@ -1466,6 +1501,11 @@ func hWorkshopOrder(ctx *Ctx) ([]byte, bool) {
 		return nil, false
 	}
 	row.FieldsJSON = fj
+	if def, derr := srv.itemDefForRow(cctx, row); derr == nil && def != nil && def.Category == gearCatReel {
+		if _, perr := srv.syncReelPerformance(cctx, row); perr != nil {
+			ctx.Log.Warn("工坊换件：轮子物理参数保存失败", "guid", shortGUID(row.GUID), "err", perr)
+		}
+	}
 	out, terr := srv.ItemToTree(cctx, row)
 	if terr != nil {
 		return nil, false
@@ -1474,6 +1514,12 @@ func hWorkshopOrder(ctx *Ctx) ([]byte, bool) {
 	if berr != nil {
 		return nil, false
 	}
+	// 官方顺序是先回 21/3，再用 4/22 刷新客户端物品缓存。
+	ctx.AfterResponse(func() {
+		ctx.Sess.Push(4, 22, proto.Args(proto.S("61"), out))
+	})
+	ctx.Log.Info("21/3 工坊换件完成", "item", row.ItemID, "guid", shortGUID(row.GUID),
+		"parts", len(orders), "silver", costSilver, "gold", costGold)
 	return bodyOut, true
 }
 

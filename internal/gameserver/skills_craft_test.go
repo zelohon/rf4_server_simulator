@@ -303,6 +303,12 @@ func TestCraftFlow(t *testing.T) {
 	if got := countOf("bread"); got != 30 { // bread 定义单位量 30
 		t.Fatalf("bread 应入库 30 份，实得 %d", got)
 	}
+	if f2 := v.Fields[2].Val; f2 == nil || f2.Kind != proto.KindObj || f2.TypeID != 310 {
+		t.Fatalf("制作鱼饵 803.f2 应带 310 熟练度块，实得 %+v", f2)
+	}
+	if pts, err := db.GetSkillPoints(ctx, uid, captureBaitSkillID); err != nil || pts != 0.1 {
+		t.Fatalf("制作后捕获鱼饵熟练度应 0.1，实得 %.3f err=%v", pts, err)
+	}
 	var txnNote string
 	if err := db.SQL.QueryRow(
 		`SELECT note FROM txn WHERE uid=? AND kind='craft' ORDER BY id DESC LIMIT 1`, uid).Scan(&txnNote); err != nil {
@@ -449,6 +455,123 @@ func TestCraftFlow(t *testing.T) {
 	// 整件移除 2 行 bread = 60 份
 	if got := countOf("bread"); got != breadsBefore-60 {
 		t.Fatalf("9/3 应整件移除 2 件 bread（30×2 份），%d → %d", breadsBefore, got)
+	}
+}
+
+// TestBaitCraftStacksAndMastery 验证连续制作鱼饵会合并到同一个背包堆，
+// 每次制作固定产出一包 30 个并增加 0.1% 捕获鱼饵熟练度。
+func TestBaitCraftStacksAndMastery(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "bait-craft-stack.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	importStaticForSkillsCraft(t, db, "item_def", "recipe")
+	ctx := context.Background()
+	srv := newSkillsCraftServer(t, db)
+	uid := int64(2000004)
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{ID: 1, Userid: uid, Srv: srv, log: logging.Discard()}
+	box := &handlerBox{srv: srv, sess: sess, main: 9, sub: 1}
+	for i := 0; i < 2; i++ {
+		loaf, err := srv.CreateItem(ctx, uid, "loaf_01", "backpack", 1)
+		if err != nil {
+			t.Fatalf("第 %d 次创建材料失败: %v", i+1, err)
+		}
+		srv.alignItemRowQty(ctx, loaf)
+		box.tree = proto.Args524(craftObj8("craft_bait_bread", nil, 1))
+		body, ok := box.invoke(t)
+		if !ok || u64Of(decodeTreeValue(t, srv, body).Fields[0].Num) != 1 {
+			t.Fatalf("第 %d 次制作失败", i+1)
+		}
+	}
+	var rows, qty int64
+	if err := db.SQL.QueryRow(`SELECT COUNT(*), COALESCE(SUM(qty),0) FROM item WHERE uid=? AND item_id='bread' AND container='backpack'`,
+		uid).Scan(&rows, &qty); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || qty != 60 {
+		t.Fatalf("两次制作应合并成 1 堆 60 个，实得 rows=%d qty=%d", rows, qty)
+	}
+	if pts, err := db.GetSkillPoints(ctx, uid, captureBaitSkillID); err != nil || pts != 0.2 {
+		t.Fatalf("两次制作后熟练度应 0.2，实得 %.3f err=%v", pts, err)
+	}
+}
+
+// TestBaitDigFlow 验证 9/3 使用铲子会产出鱼饵、合并背包堆并增加捕获鱼饵熟练度。
+func TestBaitDigFlow(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "baitdig.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	importStaticForSkillsCraft(t, db, "item_def")
+	ctx := context.Background()
+	srv := newSkillsCraftServer(t, db)
+	uid := int64(2000003)
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{ID: 1, Userid: uid, Srv: srv, log: logging.Discard()}
+	box := &handlerBox{srv: srv, sess: sess}
+	tool, err := srv.CreateItem(ctx, uid, baitShovelItemID, "backpack", 1)
+	if err != nil {
+		t.Fatalf("创建铲子失败: %v", err)
+	}
+	baitCount := func() int64 {
+		rows, err := db.ListItemsByContainers(ctx, uid, []string{"backpack", "rig"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int64
+		for _, it := range rows {
+			switch it.ItemID {
+			case "worm_01", "maggot", "naiad", "caddisfly", "unibeetle_larva", "stonefly_nymph", "scolytinae":
+				n += srv.stackCountOf(ctx, it)
+			}
+		}
+		return n
+	}
+	box.main, box.sub = 9, 3
+	box.tree = proto.Args524(proto.Guid(tool.GUID))
+	body, ok := box.invoke(t)
+	if !ok {
+		t.Fatal("9/3 挖饵未处理")
+	}
+	v := decodeTreeValue(t, srv, body)
+	if !v.IsKind(proto.KindObj) || v.TypeID != 803 || u64Of(v.Fields[0].Num) != 1 {
+		t.Fatalf("挖饵应返回成功的 803，实得 %+v", v)
+	}
+	if got := baitCount(); got < 1 {
+		t.Fatalf("挖饵后应至少新增 1 个鱼饵，实得 %d", got)
+	}
+	if pts, err := db.GetSkillPoints(ctx, uid, captureBaitSkillID); err != nil || pts != 0.1 {
+		t.Fatalf("挖饵后捕获鱼饵熟练度应 0.1，实得 %.3f err=%v", pts, err)
+	}
+	f2 := v.Fields[2].Val
+	if f2 == nil || f2.Kind != proto.KindObj || f2.TypeID != 310 {
+		t.Fatalf("挖饵 803.f2 应带 310 熟练度块，实得 %+v", f2)
+	}
+
+	before := baitCount()
+	box.tree = proto.Args524(proto.Guid(tool.GUID))
+	body, ok = box.invoke(t)
+	if !ok || u64Of(decodeTreeValue(t, srv, body).Fields[0].Num) != 1 {
+		t.Fatal("第二次挖饵失败")
+	}
+	if got := baitCount(); got <= before {
+		t.Fatalf("第二次挖饵后鱼饵数量应增加，前=%d 后=%d", before, got)
+	}
+	if pts, err := db.GetSkillPoints(ctx, uid, captureBaitSkillID); err != nil || pts != 0.2 {
+		t.Fatalf("第二次挖饵后熟练度应 0.2，实得 %.3f err=%v", pts, err)
 	}
 }
 

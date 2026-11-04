@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -94,7 +95,8 @@ const GreetingUUID = "DAB12FBC-828D-4E00-B222-FB0D6EE7BF23"
 // AuthMagic 认证包首字节（客户端 TcpStartMessage 固定前缀）。
 const AuthMagic = 0x01
 
-// TryParseAuthPacket 认证握手包：`01 <重连标记> + u32 len + token`（token 含 >=3 个 '|'）。
+// TryParseAuthPacket 认证握手包：`01 <重连标记> + u32 len + token`。
+// 新协议 token 含 >=3 个 '|'；旧版 CN 兼容口使用 32/48 位十六进制 token。
 // 返回 (token, consumed, true)；数据不足/不匹配 → false。
 //
 // 第二字节是重连标记：首连为 0x00，重连为 0x01，两者都必须接受。
@@ -108,16 +110,34 @@ func TryParseAuthPacket(data []byte) (token string, consumed int, ok bool) {
 		return "", 0, false
 	}
 	token = string(data[6:total])
-	n := 0
-	for i := 0; i < len(token); i++ {
-		if token[i] == '|' {
-			n++
-		}
-	}
-	if n < 3 {
+	if !validAuthToken(token) {
 		return "", 0, false
 	}
 	return token, total, true
+}
+
+// validAuthToken 同时接受作者协议的四段 token 与旧版 CN 的十六进制 token。
+func validAuthToken(token string) bool {
+	if len(token) == 0 || len(token) > 4096 {
+		return false
+	}
+	pipes := 0
+	for i := 0; i < len(token); i++ {
+		if token[i] < 0x21 || token[i] > 0x7e {
+			return false
+		}
+		if token[i] == '|' {
+			pipes++
+		}
+	}
+	if pipes >= 3 {
+		return true
+	}
+	if len(token) != 32 && len(token) != 48 {
+		return false
+	}
+	_, err := hex.DecodeString(token)
+	return err == nil
 }
 
 // AuthPacketReconnect 第二字节 == 1 → 客户端重连握手。

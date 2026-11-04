@@ -6,6 +6,7 @@ package gameserver
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
 
 	"rf4server/internal/proto"
@@ -35,6 +36,86 @@ func fishingSkillCatForRig(rigType int64) int64 {
 		return 11
 	}
 	return 1
+}
+
+const (
+	// 熟练度增长概率按 p = 0.9 * 25 / (25 + 当前熟练度) 计算。
+	// 熟练度越高，命中增长的概率越低；100% 时直接返回 0。
+	fishingProficiencyChanceScale = 25.0
+	fishingProficiencyMaxChance   = 0.9
+)
+
+// fishingProficiencyGainChance 返回一次钓获触发熟练度增长的概率。
+func fishingProficiencyGainChance(current float64) float64 {
+	if current < 0 {
+		current = 0
+	}
+	if current >= profCap {
+		return 0
+	}
+	return fishingProficiencyMaxChance * fishingProficiencyChanceScale /
+		(fishingProficiencyChanceScale + current)
+}
+
+// fishingProficiencyLargeGainChance 返回增长命中后获得 0.2%（而非 0.1%）的概率。
+// 低熟练度更容易获得较大增量，高熟练度更多获得 0.1%。
+func fishingProficiencyLargeGainChance(current float64) float64 {
+	if current < 0 {
+		current = 0
+	}
+	if current > profCap {
+		current = profCap
+	}
+	return 0.8 - 0.6*(current/profCap)
+}
+
+// fishingProficiencyGainForRoll 是可测试的纯函数。gainRoll 决定本次是否增长，
+// amountRoll 决定命中后增加 0.2 还是 0.1。
+func fishingProficiencyGainForRoll(current, gainRoll, amountRoll float64) float64 {
+	if current >= profCap || gainRoll >= fishingProficiencyGainChance(current) {
+		return 0
+	}
+	if amountRoll < fishingProficiencyLargeGainChance(current) {
+		return 0.2
+	}
+	return 0.1
+}
+
+// awardFishingProficiency 按实际钓组大类增加熟练度。
+func (s *Server) awardFishingProficiency(ctx context.Context, uid, rigType int64) (int64, float64) {
+	cat := fishingSkillCatForRig(rigType)
+	return cat, s.awardSkillProficiency(ctx, uid, cat)
+}
+
+// awardSkillProficiency 按指定技能大类增加熟练度。满熟练度不写库；
+// 接近上限时只增加剩余可容纳的数值。
+func (s *Server) awardSkillProficiency(ctx context.Context, uid, cat int64) float64 {
+	return s.awardSkillProficiencyWithRolls(ctx, uid, cat, rand.Float64(), rand.Float64())
+}
+
+// awardSkillProficiencyWithRolls 允许测试注入随机数，实际写库仍复用同一概率公式。
+func (s *Server) awardSkillProficiencyWithRolls(ctx context.Context, uid, cat int64, gainRoll, amountRoll float64) float64 {
+	if s == nil || s.DB == nil {
+		return 0
+	}
+	current, err := s.DB.GetSkillPoints(ctx, uid, cat)
+	if err != nil {
+		return 0
+	}
+	gain := fishingProficiencyGainForRoll(current, gainRoll, amountRoll)
+	if gain <= 0 {
+		return 0
+	}
+	if current+gain > profCap {
+		gain = profCap - current
+	}
+	if gain <= 1e-9 {
+		return 0
+	}
+	if err := s.DB.AddSkillPoints(ctx, uid, cat, gain); err != nil {
+		return 0
+	}
+	return gain
 }
 
 // skillNodeEffectPoints 将每级效果百分比换算为效果点。

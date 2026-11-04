@@ -83,7 +83,7 @@ func TestRecordRoundtrip(t *testing.T) {
 	defer gc.Close()
 	defer sc.Close()
 
-	op := OpenPayload{Token: "local|1|0|abc", Reconnect: true, ClientIP: "1.2.3.4"}
+	op := OpenPayload{Token: "local|1|7247281|abc", Userid: 7247281, Reconnect: true, ClientIP: "1.2.3.4"}
 	opb, _ := json.Marshal(op)
 	if err := gc.WriteRecord(TypeOpen, 42, opb); err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestRecordRoundtrip(t *testing.T) {
 		t.Fatalf("first record: rt=%v sid=%d err=%v", rt, sid, err)
 	}
 	var got OpenPayload
-	if err := json.Unmarshal(payload, &got); err != nil || got.Token != op.Token || !got.Reconnect {
+	if err := json.Unmarshal(payload, &got); err != nil || got.Token != op.Token || got.Userid != op.Userid || !got.Reconnect {
 		t.Fatalf("open payload mismatch: %s", payload)
 	}
 	rt, _, payload, err = sc.ReadRecord()

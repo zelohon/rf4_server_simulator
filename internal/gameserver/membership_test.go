@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"rf4server/internal/proto"
-	"rf4server/internal/store"
 )
 
 // TestBuildProfile307Membership 验证 f10/f11 由「到期时间」驱动。
@@ -25,7 +24,7 @@ func TestBuildProfile307Membership(t *testing.T) {
 	mk := func(membership, expireAt int64) {
 		t.Helper()
 		if _, err := db.SQL.ExecContext(ctx,
-			`UPDATE profile SET membership=?, membership_expire_at=? WHERE uid=?`,
+			`UPDATE profile SET membership=?, membership_exp=?, stars=stars WHERE uid=?`,
 			membership, expireAt, uid); err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +57,7 @@ func TestBuildProfile307Membership(t *testing.T) {
 		t.Fatalf("过期会员应回落为 0/0，got f10=%d f11=%d", f10, f11)
 	}
 
-	// 3) 标志为 1 但从未开通（expire=0）→ 同样视为未激活
+	// 3) 计时会员但从未写到期时间（exp=0）→ 视为未激活
 	mk(1, 0)
 	f10, f11 = flags()
 	if f10 != 0 || f11 != 0 {
@@ -101,26 +100,33 @@ func TestGrantMembershipExtends(t *testing.T) {
 		t.Fatalf("续期应在原到期日上顺延 30 天，实际差 %d 秒", d)
 	}
 
-	// 长期：days<=0 落到 2100-01-01
+	// 永久：days<=0 → kind=2，到期时间写 0
 	exp3, err := db.GrantMembership(ctx, uid, 0)
 	if err != nil {
-		t.Fatalf("长期开通: %v", err)
+		t.Fatalf("永久开通: %v", err)
 	}
-	if exp3 != store.MembershipForeverExpireAt {
-		t.Fatalf("长期到期时间=%d, want %d", exp3, store.MembershipForeverExpireAt)
+	if exp3 != 0 {
+		t.Fatalf("永久会员到期时间应为 0，实得 %d", exp3)
+	}
+	p, err := db.GetProfile(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Membership != 2 || p.MembershipExp != 0 {
+		t.Fatalf("永久会员应 kind=2/exp=0，got kind=%d exp=%d", p.Membership, p.MembershipExp)
 	}
 
 	// 取消
 	if err := db.RevokeMembership(ctx, uid); err != nil {
 		t.Fatalf("取消会员: %v", err)
 	}
-	p, err := db.GetProfile(ctx, uid)
+	p, err = db.GetProfile(ctx, uid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Membership != 0 || p.MembershipExpireAt != 0 {
+	if p.Membership != 0 || p.MembershipExp != 0 {
 		t.Fatalf("取消后应归零，got membership=%d expire=%d",
-			p.Membership, p.MembershipExpireAt)
+			p.Membership, p.MembershipExp)
 	}
 }
 

@@ -43,7 +43,8 @@ func main() {
 	log.Info("gateway 启动",
 		"version", buildinfo.Version, "commit", buildinfo.GitCommit,
 		"env", cfg.Env,
-		"login", cfg.Gateway.LoginAddr, "realtime", cfg.Gateway.RealtimeAddr,
+		"login", cfg.Gateway.LoginAddr, "login_compat", cfg.Gateway.LoginCompatAddr,
+		"realtime", cfg.Gateway.RealtimeAddr,
 		"tunnel", cfg.Gateway.Tunnel.Addr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,7 +96,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("gateway 就绪", "advertise", fmt.Sprintf("%s:%d", cfg.Gateway.AdvertiseHost, cfg.Gateway.AdvertisePort))
+	log.Info("gateway 就绪", "login", cfg.Gateway.LoginAddr,
+		"login_compat", cfg.Gateway.LoginCompatAddr,
+		"advertise", fmt.Sprintf("%s:%d", cfg.Gateway.AdvertiseHost, cfg.Gateway.AdvertisePort))
 	obs.SetReady(true)
 
 	select {

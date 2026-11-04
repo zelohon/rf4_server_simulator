@@ -24,6 +24,9 @@ type FishState struct {
 	Spot         uint64
 	DepthCM      int64 // 玩家设钓深（17/12 记入；14/1 的 158.f2 透传用）
 	CastActive   bool
+	BiteGen      uint64 // 咬钩定时器代号：每次重排递增，过期定时器自动作废
+	InWater      bool   // 14/7 动画位出现 0x400（钓组在水中）
+	NeedBite     bool   // 到点时还没入水，挂起等 0x400 再派鱼
 	CastTs       time.Time
 	FallTs       time.Time
 	FallSeen     bool
@@ -40,7 +43,10 @@ type FishState struct {
 	BiteAt       time.Time     // 原定咬钩绝对时刻；硬重启后据此恢复 timer
 	Keepnet      []*RolledFish // 回退缓存（DB 权威）
 	Bait         string
-	LastSkill    int64       // 本次钓鱼大类（1 浮钓 / 2 纺车）
+	PosX         float64 // 3/9 位置同步：世界坐标 X
+	PosZ         float64 // 3/9 位置同步：世界坐标 Z
+	HasPos       bool
+	LastSkill    int64       // 本次钓鱼大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
 	Armed        *RolledFish // GM 武装"下一杆必上"（唯一绕过重量上限的路径）
 	Bonus        fishingSkillBonus
 	persist      fishPersistMeta
@@ -56,7 +62,9 @@ type RolledFish struct {
 	XP       int64
 	Silver   int64
 	LocLevel string
-	NamedID  string // 被命名鱼
+	Stamina  float64 // obj27#05 搏鱼体力池；0=按体重和已验证兜底比例计算
+	Force    float64 // obj27#08 拉力；0=按体重和已验证比例计算
+	NamedID  string  // 被命名鱼
 	Name     string
 }
 
@@ -76,6 +84,11 @@ func (s *Server) stateFor(uid int64) *FishState {
 // ---- 钓组动画就位位族 ----
 // 0x200 水层静止（浮标）、0x800 底部静止（沉底/Feeder）、0x1000 水面静止。
 const rigAnimSettledMask = 0x200 | 0x800 | 0x1000
+
+// rigAnimInWaterMask 是“钓组在水中”的位族。协议字段表确认
+// 0x200=MotionlessInWaterColumn；0x400/0x800/0x1000 分别是不同水层/姿态的
+// 静止状态。朝岸上抛竿不会出现这些位，因此仍能挡住“饵落在陆地”。
+const rigAnimInWaterMask = 0x200 | 0x400 | 0x800 | 0x1000
 
 // ---- 咬钩延迟 ----
 
@@ -289,11 +302,18 @@ var defaultFishPool = []fishPoolEntry{
 // maxMockWeight 是缺少可信装备物理数据时使用的重量上限。
 const maxMockWeight = 650
 
-// speciesPullK 保存鱼种拉力系数，默认值为 0.016。
-var speciesPullK = map[string]float64{
-	"c.roach": 0.0162, "crucian": 0.0147, "perch": 0.0176, "c.carp": 0.0133,
-	"s.bream": 0.0126, "e.chub": 0.0171, "bream": 0.0147, "a.sleeper": 0.0138,
-}
+// 以下三项来自旧版对真实服务器 14/14 帧的逐字节校准：
+// 53g -> 体力池 126.5661239624、拉力 0.5197524514；
+// 63g -> 拉力 0.6178189516。旧版两条样本的拉力都严格满足每克 0.00980665。
+const (
+	verifiedStaminaPerGram      = 2.3880400747623083
+	verifiedInitialStaminaRatio = 0.5628187656402588
+	verifiedForcePerGram        = 0.009806650025503976
+	// 实机反馈鱼体力见底过快：默认把体力池放大 4 倍，并让鱼以 85% 体力开局。
+	// 两项都可通过 tunables 的 fish_stamina_scale / fish_initial_stamina_ratio 调整。
+	defaultFishStaminaScale        = 4.0
+	defaultFishInitialStaminaRatio = 0.85
+)
 
 // lengthSeed 保存体长公式 k*w^p 的参数。
 var lengthSeed = map[string][2]float64{
@@ -369,6 +389,12 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 }
 
 func (s *Server) rollFishWithRules(loc, bait string, gearCapKg float64, bonus fishingSkillBonus) *RolledFish {
+	if s.tunableF("fish_bait_rules_enabled", 0) == 1 {
+		if s.DB == nil {
+			return nil
+		}
+		return s.rollFishFromDBWithRules(loc, bait, gearCapKg, bonus)
+	}
 	if s.DB != nil {
 		if f := s.rollFishFromDBWithRules(loc, bait, gearCapKg, bonus); f != nil {
 			return f
@@ -385,6 +411,7 @@ func (s *Server) rollFishFromDB(loc, bait string) *RolledFish {
 }
 
 func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bonus fishingSkillBonus) *RolledFish {
+	strict := s.tunableF("fish_bait_rules_enabled", 0) == 1
 	cctx := s.dbCtx()
 	statLoc := s.DB.ResolveStatLoc(cctx, loc)
 	if statLoc == "" {
@@ -426,11 +453,17 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 				wts[i] = ov.Weight
 				hasPositive = true
 			}
-			if !hasPositive {
+			if !hasPositive && !strict {
 				copy(wts, base)
 				keys = keys[:len(roster)]
 				wts = wts[:len(roster)]
 			}
+		}
+	}
+	if strict {
+		keys, wts = s.filterFishBaits(statLoc, bait, keys, wts)
+		if len(keys) == 0 {
+			return nil
 		}
 	}
 	// companion 周纪录饵效（config bait_pref_scale / bait_pref_weight_shift；
@@ -512,8 +545,9 @@ func companionTierMult(tier int64) float64 {
 	return 1.0
 }
 
-// weightSkewK 右偏钟形的右尾拉伸系数（WEIGHT_SKEW_K；越大奖杯越稀）。
-const weightSkewK = 2.6
+// weightSkewK 右偏钟形的右尾拉伸系数。
+// 过大会把绝大多数体重压到平均值附近；1.6 能让小、中、大个体分布更明显。
+const weightSkewK = 1.6
 
 // sampleWeightDB 按鱼种自然体重分布采样。
 // 峰值取达标带中点，上限取蓝冠线的 1.05 倍，并使用对数正态分布和拒绝采样。
@@ -542,18 +576,20 @@ func (s *Server) sampleWeightDB(ctx context.Context, key string, modeMult float6
 	if modeMult != 1.0 {
 		M *= modeMult // 饵效命中：峰值锚点向奖杯线右移
 	}
-	// 上限 hi：蓝冠线×1.05（缺 sup→tro*1.30→M*6.0）
+	// 整体峰值向右上抬 15%，让日常鱼获里更容易出现中大个体。
+	M *= 1.15
+	// 上限 hi：蓝冠线×1.25（缺 sup→tro*1.45→M*6.0）
 	var hi float64
 	switch {
 	case sup != nil:
-		hi = supf * 1.05
+		hi = supf * 1.25
 	case tro != nil:
-		hi = trof * 1.30
+		hi = trof * 1.45
 	default:
 		hi = M * 6.0
 	}
 	// 下限 lo：少量"太小/不达标"个体
-	lo := M * 0.15
+	lo := M * 0.12
 	if val != nil {
 		lo = math.Min(lo, vf*0.2)
 	}
@@ -854,6 +890,29 @@ func gradeMapVal(m map[int64]float64, grade int64) float64 {
 }
 
 // buildFish27 构造 27 判鱼对象。
+func (s *Server) fishStaminaFor(f *RolledFish) float64 {
+	if f == nil {
+		return 0
+	}
+	stamina := f.Stamina
+	if stamina <= 0 {
+		stamina = verifiedStaminaPerGram * float64(f.WeightG)
+	}
+	scale := s.tunableF("fish_stamina_scale", defaultFishStaminaScale)
+	if scale > 0 {
+		stamina *= scale
+	}
+	return stamina
+}
+
+func (s *Server) fishInitialStaminaRatio() float64 {
+	ratio := s.tunableF("fish_initial_stamina_ratio", defaultFishInitialStaminaRatio)
+	if ratio <= 0 {
+		return defaultFishInitialStaminaRatio
+	}
+	return math.Max(0.05, math.Min(1.0, ratio))
+}
+
 func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Value {
 	w := float64(f.WeightG)
 	st := officialSpeciesStatics[f.Species]
@@ -878,14 +937,17 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		f16v, f17v, f18v = fb[16], fb[17], fb[18]
 		f19v, f20v = fb[19], fb[20]
 	}
-	pull := math.Max(0.5, math.Round(w*speciesPullKOrDefault(f.Species)*10000)/10000)
+	stamina := s.fishStaminaFor(f)
+	initialStamina := s.fishInitialStaminaRatio()
+	pull := f.Force
+	if pull <= 0 {
+		pull = verifiedForcePerGram * w
+	}
 	// fight_power_scale：整体缩放鱼的拉力（同时影响 26 条张力曲线）。
-	// 调低可显著减少断线与收杆脱钩，调高则更硬核；默认 1.0 不改变原行为。
+	// 调低可显著减少断线与收杆脱钩，调高则更硬核；默认 1.0 保持真实样本比例。
 	if k := s.tunableF("fight_power_scale", 1.0); k > 0 && k != 1.0 {
 		pull = math.Max(0.5, math.Round(pull*k*10000)/10000)
 	}
-	score := math.Round(pushScoreRate(f.Species, f.Grade)*math.Max(1, w)*100) / 100
-	quality := fishQuality(f.Species, f.Grade)
 
 	var named *string
 	name := f.Name
@@ -910,8 +972,8 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		2:  proto.U32(uint32(f.Grade)),
 		3:  proto.F32(float32(f.LengthM)),
 		4:  proto.U32(uint32(f.WeightG)),
-		5:  proto.F32(float32(score)),
-		6:  proto.F32(float32(quality)),
+		5:  proto.F32(float32(stamina)),
+		6:  proto.F32(float32(initialStamina)),
 		8:  proto.F32(float32(pull)),
 		9:  proto.F32(float32(f9)),
 		10: proto.F32(float32(f10)),
@@ -932,13 +994,6 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 	})
 }
 
-func speciesPullKOrDefault(sp string) float64 {
-	if k, ok := speciesPullK[sp]; ok {
-		return k
-	}
-	return 0.016
-}
-
 // ---- 搏鱼曲线（fight_curves_sets.json）----
 
 // Push14_14 发判鱼推送：args("524")[guid(钓组), 27]。
@@ -946,6 +1001,18 @@ func (s *Session) Push14_14(f *RolledFish, hookGUID, gearGuid string) {
 	if gearGuid == "" {
 		gearGuid = "00000000000000000000000000000000"
 	}
+	stamina := s.Srv.fishStaminaFor(f)
+	initialStamina := s.Srv.fishInitialStaminaRatio()
+	force := f.Force
+	if force <= 0 {
+		force = verifiedForcePerGram * float64(f.WeightG)
+	}
+	if k := s.Srv.tunableF("fight_power_scale", 1.0); k > 0 && k != 1.0 {
+		force = math.Max(0.5, math.Round(force*k*10000)/10000)
+	}
+	s.log.Info("14/14 发鱼",
+		"鱼种", f.Species, "重量_g", f.WeightG, "体力池", stamina,
+		"初始体力", initialStamina, "拉力", force)
 	s.Push(14, 14, proto.Args524(
 		proto.Guid(gearGuid),
 		s.Srv.buildFish27(f, hookGUID, gearGuid),
@@ -972,9 +1039,14 @@ func (s *Server) scheduleBiteState(sess *Session, st *FishState, preserveHooked,
 	}
 	st.CastActive = true
 	st.Resolved = false
-	st.Pending = nil
-	if !preserveHooked {
-		st.Hooked = false
+	// 已经推给客户端、且玩家刺中正在溜的鱼不能被新排程清掉：
+	// 否则客户端还在溜旧鱼，服务端却按新鱼结算（青蛙→其他鱼就是这么来的）。
+	fighting := st.PushSent && st.Hooked && st.Pending != nil
+	if !fighting {
+		st.Pending = nil
+		if !preserveHooked {
+			st.Hooked = false
+		}
 	}
 	st.PushSent = false
 	st.FallSeen = false
@@ -983,22 +1055,35 @@ func (s *Server) scheduleBiteState(sess *Session, st *FishState, preserveHooked,
 	if resetCast || st.CastTs.IsZero() {
 		st.CastTs = now
 	}
+	if resetCast {
+		// 新的一杆：还没确认在水中，等 14/7 的 0x400。
+		st.InWater = false
+		st.NeedBite = false
+	}
 	st.Bonus = bonus
+	st.BiteGen++
+	gen := st.BiteGen
 	delay := s.biteDelay(st, bonus)
 	st.BiteAt = now.Add(time.Duration(delay * float64(time.Second)))
 	uid := sess.Userid
 	timer := time.AfterFunc(time.Until(st.BiteAt), func() {
-		s.onBiteTimer(uid)
+		s.onBiteTimer(uid, gen)
 	})
 	st.biteTimer = timer
 	st.mu.Unlock()
 }
 
 // onBiteTimer 到点：顺延保护检查 → 判鱼 → 推 14/14。
-func (s *Server) onBiteTimer(uid int64) {
+func (s *Server) onBiteTimer(uid int64, gen uint64) {
 	sess := s.liveSessionByUID(uid)
 	st := s.stateFor(uid)
 	st.mu.Lock()
+	if gen != st.BiteGen {
+		// 被重排替换掉的旧定时器：既不能清指针，也不能判鱼。否则会把新
+		// 定时器的指针清空，它就成了“没人管但仍在跑”的第二条鱼。
+		st.mu.Unlock()
+		return
+	}
 	st.biteTimer = nil
 	if sess == nil {
 		// 进程仍活着但玩家断开：保留 CastActive/Pending/BiteAt，下一次
@@ -1007,6 +1092,18 @@ func (s *Server) onBiteTimer(uid int64) {
 		return
 	}
 	if !st.CastActive || st.Resolved || st.PushSent {
+		st.mu.Unlock()
+		return
+	}
+	if st.Pending != nil {
+		// 钩上已经有鱼（或刚要结算），不能再判一条：否则会把 Pending 覆盖掉，
+		// 客户端还在溜旧鱼，结算却按新鱼算。
+		st.mu.Unlock()
+		return
+	}
+	if !st.InWater {
+		// 还没等到 14/7 的“在水中”动画位：先挂起，等它出现再派鱼。
+		st.NeedBite = true
 		st.mu.Unlock()
 		return
 	}
@@ -1030,7 +1127,7 @@ func (s *Server) onBiteTimer(uid int64) {
 			wait = minWait
 		}
 		st.BiteAt = now.Add(wait)
-		t := time.AfterFunc(wait, func() { s.onBiteTimer(uid) })
+		t := time.AfterFunc(wait, func() { s.onBiteTimer(uid, gen) })
 		st.biteTimer = t
 		st.mu.Unlock()
 		return
@@ -1041,7 +1138,7 @@ func (s *Server) onBiteTimer(uid int64) {
 	if !lure && now.Sub(st.CastTs) < 12*time.Second && st.TickSeen && !st.RigSettled {
 		// 顺延 1s 轮询（12s 兜底）
 		st.BiteAt = now.Add(time.Second)
-		t := time.AfterFunc(time.Second, func() { s.onBiteTimer(uid) })
+		t := time.AfterFunc(time.Second, func() { s.onBiteTimer(uid, gen) })
 		st.biteTimer = t
 		st.mu.Unlock()
 		return
@@ -1067,6 +1164,13 @@ func (s *Server) onBiteTimer(uid int64) {
 		return
 	}
 	f := s.rollFishForRig(s.dbCtx(), uid, st.GearGuid, st.Loc, st.Bait, st.Bonus)
+	if f == nil {
+		st.PushSent = false
+		st.Pending = nil
+		st.Resolved = true
+		st.mu.Unlock()
+		return
+	}
 	f.LocLevel = s.currentLevel(uid)
 	st.Pending = f
 	gear := st.GearGuid

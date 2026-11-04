@@ -626,4 +626,36 @@ func TestWorkshopToolsAreNotFishingLine(t *testing.T) {
 	if hex := gf[fieldIdxByCS(got.WireClass, csGUID)].Hex; hex != badGUID {
 		t.Fatalf("修复后 guid=%s，期望保持 %s", hex, badGUID)
 	}
+	for _, itemID := range []string{"fishing_pliers", "charcoal_bag"} {
+		def, err := db.GetItemDefByItemID(ctx, itemID)
+		if err != nil || def == nil {
+			t.Fatalf("definition %s: %v", itemID, err)
+		}
+		row := &store.Item{GUID: NewItemGUID(), UID: 1000001, ItemID: itemID,
+			NumericID: def.NumericID, WireClass: fallbackWireClass, TypeID: fallbackTypeID,
+			Container: "backpack", Qty: 0, Durability: 0, Workmanship: 0, FieldsJSON: "[]"}
+		if err := db.InsertItem(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.RepairItemPhysics(ctx); err != nil {
+			t.Fatal(err)
+		}
+		first, err := db.GetItemByGUID(ctx, row.GUID)
+		if err != nil || first == nil {
+			t.Fatalf("repaired %s: %v", itemID, err)
+		}
+		if first.Qty != 0 || first.Durability != 0 || first.Workmanship != 0 {
+			t.Fatalf("repair restored exhausted/broken item: %+v", first)
+		}
+		if err := srv.RepairItemPhysics(ctx); err != nil {
+			t.Fatal(err)
+		}
+		second, err := db.GetItemByGUID(ctx, row.GUID)
+		if err != nil || second == nil {
+			t.Fatalf("second repair %s: %v", itemID, err)
+		}
+		if *first != *second {
+			t.Fatalf("repeated repair changed %s: before=%+v after=%+v", itemID, first, second)
+		}
+	}
 }

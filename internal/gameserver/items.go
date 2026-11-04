@@ -58,6 +58,7 @@ var categoryWireClass = map[int64]wireClassEntry{
 	42: {"nacllfpgomk", 142}, // 工坊材料，可堆叠；定义类型 12026 夹在拟饵 141 与地图 143 之间
 	44: {"fcdgfdomnjm", 160}, // Sbirolino
 	46: {"cilmgoaoofg", 120}, // 成品窝料
+	47: {"eebdgfednim", 700}, // 铃铛/咬钩信号器 dadgbbiijki
 	48: {"npnkhkicfkg", 613}, // 渔轮导线环
 	49: {"bnfpgceodij", 616}, // 制动钮
 	50: {"jjikombcnnj", 614}, // 轮手柄
@@ -281,45 +282,54 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 	if err != nil || def == nil {
 		return changed
 	}
-	if strength, ok := strengthBitsFor(def, it.Durability); ok {
-		idx := fieldIdxByCS(class, csStrength)
-		if setWireFloat(fields, class, idx, strength) {
-			changed = true
+	// 渔轮顶部 f0 表示当前齿轮传动比。必须先读已安装齿轮，只有找不到
+	// 零件时才回退到母轮出厂定义；否则每次上线都会重置收线速度。
+	reelGearApplied := false
+	if class == "dgjinoebdop" {
+		if _, gearDef, _, ok := s.selectedReelPart(ctx, fields, 52); ok {
+			if ratio := itemDefF32(gearDef, gearAttrRatio); ratio > 0 {
+				idx := fieldIdxByCS(class, csStrength)
+				if setWireFloat(fields, class, idx, ratio*it.Workmanship) {
+					changed = true
+				}
+				reelGearApplied = true
+			}
+		}
+	}
+	if !reelGearApplied {
+		if strength, ok := strengthBitsFor(def, it.Durability); ok {
+			idx := fieldIdxByCS(class, csStrength)
+			if setWireFloat(fields, class, idx, strength) {
+				changed = true
+			}
 		}
 	}
 
-	// 渔轮刹车片子是嵌套实例，客户端使用它自己的 f0，不使用母轮顶层强度。
-	// 其值来自母轮 mlfjkaoicdn.omghfmdfjpc × 母轮工艺。
+	// 渔轮刹车片子是嵌套实例，客户端使用它自己的 f0。其值必须来自当前
+	// 安装摩擦片的定义，而不是母轮出厂摩擦片，否则重登后摩擦力会归位。
 	if class == "dgjinoebdop" {
-		idx := fieldIdxByCS(class, "mlfjkaoicdn")
-		if idx >= 0 && idx < len(fields) && fields[idx].Val != nil && fields[idx].Val.Kind == proto.KindObj {
-			sub := fields[idx].Val
-			if sub.Class == "loedbndnill" {
-				for _, pair := range []struct {
-					cs string
-					v  float64
-				}{{csWorkmanship, it.Workmanship}, {csDurability, it.Durability}} {
-					si := fieldIdxByCS(sub.Class, pair.cs)
-					// 刹车片耐久是零件自己的磨损数据（工坊修复/换件依赖它），
-					// 只在缺失（nil/0）时用母轮耐久初始化，已有值必须保留。
-					if pair.cs == csDurability && si >= 0 && si < len(sub.Fields) {
-						if f := sub.Fields[si]; f.Num != nil && proto.F32FromBits(uint32(*f.Num)) > 0 {
-							continue
-						}
-					}
-					if setWireFloat(sub.Fields, sub.Class, si, pair.v) {
-						changed = true
+		sub, dragDef, _, ok := s.selectedReelPart(ctx, fields, 9)
+		if ok && sub.Class == "loedbndnill" && dragDef != nil {
+			for _, pair := range []struct {
+				cs string
+				v  float64
+			}{{csWorkmanship, it.Workmanship}, {csDurability, it.Durability}} {
+				si := fieldIdxByCS(sub.Class, pair.cs)
+				// 刹车片耐久是零件自己的磨损数据（工坊修复/换件依赖它），
+				// 只在缺失（nil/0）时用母轮耐久初始化，已有值必须保留。
+				if pair.cs == csDurability && si >= 0 && si < len(sub.Fields) {
+					if f := sub.Fields[si]; f.Num != nil && proto.F32FromBits(uint32(*f.Num)) > 0 {
+						continue
 					}
 				}
-				attrs := defAttrs(def)
-				cfg, _ := attrs["mlfjkaoicdn"].(map[string]any)
-				if bits, ok := cfg["omghfmdfjpc"].(float64); ok {
-					force := float64(proto.F32FromBits(uint32(bits))) * it.Workmanship
-					si := fieldIdxByCS(sub.Class, csDragForce)
-					if setWireFloat(sub.Fields, sub.Class, si, force) {
-						changed = true
-					}
+				if setWireFloat(sub.Fields, sub.Class, si, pair.v) {
+					changed = true
 				}
+			}
+			force := itemDefF32(dragDef, gearAttrDragMax) * it.Workmanship
+			si := fieldIdxByCS(sub.Class, csDragForce)
+			if setWireFloat(sub.Fields, sub.Class, si, force) {
+				changed = true
 			}
 		}
 	}
@@ -382,7 +392,15 @@ func (s *Server) canonicalizeNestedItemPhysicalFields(ctx context.Context, class
 		if err != nil || def == nil {
 			continue
 		}
-		if strength, ok := strengthBitsFor(def, durability); ok && strength > 0 {
+		strength := 0.0
+		strengthOK := false
+		if def.Category == 52 {
+			strength = itemDefF32(def, gearAttrRatio) * workmanship
+			strengthOK = strength > 0
+		} else {
+			strength, strengthOK = strengthBitsFor(def, durability)
+		}
+		if strengthOK && strength > 0 {
 			if setWireFloat(obj.Fields, obj.Class, fieldIdxByCS(obj.Class, csStrength), strength) {
 				changed = true
 			}
@@ -840,10 +858,10 @@ func netTicksNow() int64 {
 }
 
 // reclassifyStoredItem 把误落成钓线类的物品改写成该类别自己的实例类。
-// 已经买进背包的工坊工具和材料靠这一步恢复图标，不必扔掉重买。
+// 已购工具、材料和铃铛靠这一步恢复实例类型，不必重买。
 // guid、容器、数量、耐久和工艺保持不变。类别已经对上，或不是钓线回退类时不改。
 func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *store.ItemDef) (bool, error) {
-	if it == nil || def == nil {
+	if it == nil || def == nil || (def.Category != 41 && def.Category != 42 && def.Category != 47) {
 		return false, nil
 	}
 	cls, ok := categoryWireClass[def.Category]
@@ -858,6 +876,19 @@ func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *
 		return false, err
 	}
 	s.applyDefAttrs(def, cls.Class, obj)
+	if def.Category == 47 {
+		old, err := FieldsFromJSON(it.FieldsJSON)
+		if err != nil {
+			return false, err
+		}
+		// 换实例类型时保留已挂载铃铛的父引用和共同状态字段。
+		for _, field := range wiregen.ClassMeta[cls.Class].Fields {
+			idx := fieldIdxByCS(it.WireClass, field.Name)
+			if idx >= 0 && idx < len(old) && old[idx].Op == obj.Fields[field.Idx].Op {
+				obj.Fields[field.Idx] = old[idx]
+			}
+		}
+	}
 	setHex := func(cs, v string) {
 		if idx := fieldIdxByCS(cls.Class, cs); idx >= 0 {
 			obj.Fields[idx].Hex = v
@@ -871,22 +902,13 @@ func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *
 	setHex(csGUID, it.GUID)
 	setNum(csNumericID, uint64(def.NumericID))
 	rowQty := it.Qty
-	if rowQty < 1 {
-		rowQty = 1
-	}
 	if countableCategories[def.Category] {
 		if idx := fieldIdxByCS(cls.Class, csQty); idx >= 0 {
 			obj.Fields[idx].Num = ptrU64(uint64(rowQty))
 		}
 	}
 	workmanship := it.Workmanship
-	if workmanship <= 0 {
-		workmanship = 1
-	}
 	durability := it.Durability
-	if durability <= 0 {
-		durability = 1
-	}
 	s.materializeInto(ctx, cls.Class, def, obj, it.GUID, workmanship, durability)
 	if idx := fieldIdxByCS(cls.Class, csCreated); idx >= 0 && u64Of(obj.Fields[idx].Num) == 0 {
 		obj.Fields[idx].Num = ptrU64(uint64(netTicksNow()))
@@ -894,7 +916,7 @@ func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *
 	if idx := fieldIdxByCS(cls.Class, csUpdated); idx >= 0 && u64Of(obj.Fields[idx].Num) == 0 {
 		obj.Fields[idx].Num = ptrU64(uint64(proto.WindowsFiletimeNow()))
 	}
-	if idx := fieldIdxByCS(cls.Class, csStateEnum); idx >= 0 {
+	if idx := fieldIdxByCS(cls.Class, csStateEnum); idx >= 0 && (def.Category != 47 || u64Of(obj.Fields[idx].Num) == 0) {
 		st := u64Of(obj.Fields[idx].Num)
 		if defBits, ok := defAttrU64(def, "hgaijieklek"); ok {
 			st = defBits
@@ -1006,6 +1028,33 @@ func (s *Server) CreateItem(ctx context.Context, uid int64, itemID, container st
 	if err := s.DB.InsertItem(ctx, it); err != nil {
 		return nil, err
 	}
+	return it, nil
+}
+
+// prepareNewItemWithCount 按“实际件数”构造可堆叠物品，绕开定义单位量换算。
+// 铲子挖饵需要精确发放 1-5 个，而不是 1 个购买单位（自然饵通常为 30 个/单位）。
+func (s *Server) prepareNewItemWithCount(ctx context.Context, uid int64, itemID, container string,
+	count int64, explicitGUID string) (*store.Item, error) {
+	if count < 1 {
+		count = 1
+	}
+	it, err := s.prepareNewItem(ctx, uid, itemID, container, 1, explicitGUID)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := FieldsFromJSON(it.FieldsJSON)
+	if err != nil {
+		return nil, err
+	}
+	if idx := fieldIdxByCS(it.WireClass, csQty); idx >= 0 && idx < len(fields) {
+		fields[idx].Num = ptrU64(uint64(count))
+		fj, ferr := FieldsToJSON(fields)
+		if ferr != nil {
+			return nil, ferr
+		}
+		it.FieldsJSON = fj
+	}
+	it.Qty = count
 	return it, nil
 }
 

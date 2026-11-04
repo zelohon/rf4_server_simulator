@@ -106,7 +106,7 @@ func FieldsFromJSON(s string) ([]proto.Field, error) {
 			if pf.V != nil && string(*pf.V) != "null" {
 				_ = json.Unmarshal(*pf.V, &f.Float)
 			}
-		case "str":
+		case "str", "u16str", "u32n":
 			if pf.V != nil && string(*pf.V) != "null" {
 				var s string
 				if err := json.Unmarshal(*pf.V, &s); err == nil {
@@ -153,7 +153,7 @@ func FieldsToJSON(fields []proto.Field) (string, error) {
 			pf.Hex = f.Hex
 		case "float", "double":
 			pf.V = rawFloat(f.Float)
-		case "str":
+		case "str", "u16str", "u32n":
 			if f.Str == nil {
 				pf.V = rawNull()
 			} else {
@@ -419,7 +419,7 @@ func fieldToPy(f *proto.Field) map[string]any {
 		m["hex"] = f.Hex
 	case "float", "double":
 		m["v"] = f.Float
-	case "str":
+	case "str", "u16str", "u32n":
 		if f.Str == nil {
 			m["v"] = nil
 		} else {

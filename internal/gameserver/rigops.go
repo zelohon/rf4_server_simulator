@@ -21,6 +21,7 @@ package gameserver
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -2014,9 +2015,10 @@ func castReady158(ctx *Ctx, gear string, depthCM int64, rigType int64) []byte {
 	if gear != "" {
 		hookGUID = ctx.Sess.Srv.mountedHookGuid(ctx.Sess.pushCtx(), gear)
 	}
+	profile := ctx.Sess.Srv.castDistanceForRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear, rigType)
 	obj := wiregen.MustMakeObj("lfnjkiffphn", map[int]*proto.Value{
 		0: proto.Guid(guidOrZero(gear)),
-		1: proto.U32(castBaseDistanceBits(rigType)),
+		1: proto.U32(proto.F32Bits(float32(profile.DistanceM))),
 		2: proto.U32(depthBits),
 		3: proto.Guid(guidOrZero(hookGUID)),
 	})
@@ -2024,6 +2026,44 @@ func castReady158(ctx *Ctx, gear string, depthCM int64, rigType int64) []byte {
 	if err != nil {
 		return nil
 	}
+	overTest := profile.RodTestMaxG > 0 && profile.PayloadWeightG > profile.RodTestMaxG
+	payloadTestRatio := 0.0
+	if profile.RodTestMaxG > 0 {
+		payloadTestRatio = profile.PayloadWeightG / profile.RodTestMaxG
+	}
+	ctx.Log.Info("抛投距离计算", "rod", shortGUID(gear), "reel", shortGUID(profile.ReelGUID),
+		"distance_m", math.Round(profile.DistanceM*100)/100,
+		"base_m", math.Round(profile.BaseM*100)/100,
+		"action", profile.CastAction, "power", profile.CastPower,
+		"reel_type", profile.ReelType, "spool_size", profile.SpoolSize,
+		"spool_capacity_m", math.Round(profile.SpoolCapacityM*100)/100,
+		"spool_fill", math.Round(profile.SpoolFill*1000)/1000,
+		"rod_length_m", math.Round(profile.RodLengthM*100)/100,
+		"rod_taper", math.Round(profile.RodTaper*1000)/1000,
+		"rod_test_g", fmt.Sprintf("%.1f-%.1f", profile.RodTestMinG, profile.RodTestMaxG),
+		"line_diameter_mm", math.Round(profile.LineDiameterMM*1000)/1000,
+		"line_length_m", math.Round(profile.LineLengthM*100)/100,
+		"line_material", profile.LineMaterial,
+		"line_stretch", math.Round(profile.LineStretch*1000)/1000,
+		"line_density_gpm", math.Round(profile.LineLinearDensityGPM*1000)/1000,
+		"line_running_weight_g", math.Round(profile.LineRunningWeightG*1000)/1000,
+		"rig_weight_g", math.Round(profile.RigWeightG*100)/100,
+		"bait_item", profile.BaitItemID,
+		"bait_weight_g", math.Round(profile.BaitWeightG*100)/100,
+		"payload_g", math.Round(profile.PayloadWeightG*100)/100,
+		"rod_over_test", overTest,
+		"payload_to_test_max", math.Round(payloadTestRatio*1000)/1000,
+		"weight_factor", math.Round(profile.WeightFactor*1000)/1000,
+		"skill_cat", profile.SkillCategory, "skill_mastery", profile.SkillMastery,
+		"skill_node_effect", math.Round(profile.SkillNodeEffect*1000)/1000,
+		"skill_factor", math.Round(profile.SkillFactor*1000)/1000,
+		"special_skill_factor", math.Round(profile.SpecialSkillFactor*1000)/1000,
+		"player_primary", math.Round(profile.PlayerPrimary*1000)/1000,
+		"player_secondary", math.Round(profile.PlayerSecondary*1000)/1000,
+		"friction", math.Round(profile.Friction*1000)/1000,
+		"efficiency", math.Round(profile.Efficiency*1000)/1000,
+		"bearing_quality", profile.BearingQuality, "oil_quality", profile.OilQuality,
+		"line_limit_m", profile.LineLimitM, "clip_m", profile.ClipLimitM)
 	return body
 }
 

@@ -64,6 +64,10 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("GET /api/players", auth(s.handlePlayers))
 	mux.HandleFunc("GET /api/players/detail", auth(s.handlePlayerDetail))
 	mux.HandleFunc("POST /api/players/update", auth(s.handlePlayerUpdate))
+	// 上游：按 kind/expiresAt 直接设置会员（网页后台用）。
+	mux.HandleFunc("POST /api/players/membership", auth(s.handlePlayerMembership))
+	// 本项目控制台：按"天数"开通/续期（0=永久），内部换算成 kind/expiresAt。
+	mux.HandleFunc("POST /api/players/membership/grant", auth(s.handleGrantMembership))
 	mux.HandleFunc("POST /api/players/grant", auth(s.handleGrantItem))
 	mux.HandleFunc("POST /api/players/items/delete", auth(s.handlePlayerItemDelete))
 	mux.HandleFunc("POST /api/players/keepnet/add", auth(s.handlePlayerKeepnetAdd))
@@ -74,7 +78,6 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("POST /api/players/skills/unlimited", auth(s.handlePlayerSkillUnlimited))
 	mux.HandleFunc("POST /api/players/kick", auth(s.handleKick))
 	mux.HandleFunc("POST /api/players/ban", auth(s.handleBan))
-	mux.HandleFunc("POST /api/players/membership", auth(s.handleGrantMembership))
 	mux.HandleFunc("POST /api/players/membership/revoke", auth(s.handleRevokeMembership))
 	mux.HandleFunc("GET /api/catalog/items", auth(s.handleCatalogItems))
 	mux.HandleFunc("GET /api/stores", auth(s.handleStores))
@@ -102,6 +105,9 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	s.srv = &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return s
 }
+
+// Handler 返回管理后台路由，供统一入口直接挂载；不依赖独立监听端口。
+func (s *Server) Handler() http.Handler { return s.mux }
 
 // SetSessionCount 供外部更新在线会话数。
 func (s *Server) SetSessionCount(n int64) { s.sessionCount.Store(n) }
@@ -242,6 +248,10 @@ func (s *Server) handleTunableSet(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "参数错误")
 		return
 	}
+	if req.Key == "fish_bait_rules_enabled" && req.Value != "0" && req.Value != "1" {
+		httpError(w, 400, "吃饵规则开关只能为 0 或 1")
+		return
+	}
 	if err := s.db.TunableSet(r.Context(), req.Key, req.Value, adminOf(r)); err != nil {
 		httpError(w, 500, err.Error())
 		return
@@ -333,8 +343,13 @@ func (s *Server) handlePlayerDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"uid": p.UID, "name": p.Name, "level": p.Level, "xp": p.XP,
 		"silver": p.Silver, "gold": p.Gold, "bank": p.Bank,
-		"membership": p.Membership, "membership_expire_at": p.MembershipExpireAt,
-		"stars": p.Stars, "email": p.Email,
+		"membership": p.Membership, "membership_exp": p.MembershipExp,
+		// membership_expire_at 是控制台沿用的旧字段名，值同 membership_exp；
+		// 永久会员 kind=2 时该值为 0，前端需同时看 membership_permanent。
+		"membership_expire_at": p.MembershipExp,
+		"membership_permanent": p.Membership == 2,
+		"membership_active":    store.MembershipAt(p.Membership, p.MembershipExp, time.Now().Unix()).Active,
+		"stars":                p.Stars, "email": p.Email,
 		"role": p.Role, "banned": p.Banned,
 		"item_count": len(items), "keepnet_count": len(keepnet), "mail_count": len(mails),
 		"items": items, "keepnet": keepnet, "mails": mailRows, "skills": skills,
@@ -346,13 +361,15 @@ func (s *Server) handlePlayerDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePlayerUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		UID    int64   `json:"uid"`
-		Name   *string `json:"name"`
-		Level  *int64  `json:"level"`
-		XP     *int64  `json:"xp"`
-		Silver *int64  `json:"silver"`
-		Gold   *int64  `json:"gold"`
-		Bank   *int64  `json:"bank"`
+		UID           int64   `json:"uid"`
+		Name          *string `json:"name"`
+		Level         *int64  `json:"level"`
+		XP            *int64  `json:"xp"`
+		Silver        *int64  `json:"silver"`
+		Gold          *int64  `json:"gold"`
+		Bank          *int64  `json:"bank"`
+		Membership    *int64  `json:"membership"`
+		MembershipExp *int64  `json:"membership_exp"`
 	}
 	if err := readJSON(r, &req); err != nil || req.UID == 0 {
 		httpError(w, 400, "参数错误")
@@ -378,12 +395,25 @@ func (s *Server) handlePlayerUpdate(w http.ResponseWriter, r *http.Request) {
 	// 等级和经验必须保持一致：只改等级时按进度曲线回填对应经验；
 	// 否则下一次经验结算会按累计经验重新计算等级。
 	lvl, xpAfter := gameserver.AdminResolveLevelXP(req.Level, req.XP, p.Level, p.XP)
+	membership, exp := p.Membership, p.MembershipExp
+	if req.Membership != nil || req.MembershipExp != nil {
+		membership = apply(membership, req.Membership)
+		exp = apply(exp, req.MembershipExp)
+		if membership != 1 {
+			exp = 0
+		}
+		if membership < 0 || membership > 2 || (membership == 1 && (exp <= time.Now().Unix() || exp > 253402300799)) {
+			httpError(w, 400, "请选择有效的会员类型和到期时间")
+			return
+		}
+	}
 	_, err = s.db.SQL.ExecContext(ctx, `
-		UPDATE profile SET name=?, level=?, xp=?, silver=?, gold=?, bank=?, updated_ts=?
+		UPDATE profile SET name=?, level=?, xp=?, silver=?, gold=?, bank=?,
+		 membership=?, membership_exp=?, updated_ts=?
 		WHERE uid=?`,
 		name, lvl, xpAfter,
 		apply(p.Silver, req.Silver), apply(p.Gold, req.Gold), apply(p.Bank, req.Bank),
-		float64(time.Now().Unix()), req.UID)
+		membership, exp, float64(time.Now().Unix()), req.UID)
 	if err != nil {
 		httpError(w, 500, err.Error())
 		return
@@ -448,9 +478,19 @@ func (s *Server) handleGrantMembership(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "membership.grant",
 		strconv.FormatInt(req.UID, 10), fmt.Sprintf("days=%d exp=%d", req.Days, exp))
+	// exp=0 表示永久会员（kind=2）。
+	permanent := exp == 0
+	kind := int64(1)
+	daysLeft := int64(0)
+	if permanent {
+		kind = 2
+	} else {
+		daysLeft = (exp - time.Now().Unix()) / 86400
+	}
 	writeJSON(w, map[string]any{
-		"ok": true, "membership": 1, "membership_expire_at": exp,
-		"days_left": (exp - time.Now().Unix()) / 86400,
+		"ok": true, "membership": kind,
+		"membership_permanent": permanent, "membership_expire_at": exp,
+		"days_left": daysLeft,
 	})
 }
 

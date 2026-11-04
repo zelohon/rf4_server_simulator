@@ -15,10 +15,14 @@ func registerTimelineHandlers(d *Dispatch) { // fire-and-forget：客户端不�
 	d.Register(1, 18, hBoolTrue)   // game/telemetry 设备指纹 → bool true
 
 	// 空集/无数据语义
-	d.Register(6, 2, hNull)          // comp/load 无竞赛 → null
+	d.Register(6, 2, hNull)           // comp/load 无竞赛 → null
 	d.Register(24, 3, hSocialCurrent) // social/current：返回当前公共聊天频道
-	d.Register(24, 12, hU32ArrEmpty) // social/bl_get 黑名单 → 空 u32 数组
+	d.Register(24, 12, hU32ArrEmpty)  // social/bl_get 黑名单 → 空 u32 数组
 	d.Register(9, 5, hCraftTemplates)
+	d.Register(3, 18, hPlayerWarnings)
+	d.RegisterResponseContract(3, 18, ResponseContractRule{
+		Kind: proto.KindArgs, ArgCode: "189", ArgItemTypeIDs: []uint32{3005},
+	})
 
 	// 环境/视觉（28 族，纯构造最小合法结构）
 	d.Register(28, 1, hEnvironment)
@@ -48,6 +52,12 @@ func hCraftTemplates(ctx *Ctx) ([]byte, bool) {
 		return emptyArgsBody(), true
 	}
 	return body, true
+}
+
+// hPlayerWarnings 返回警告数组；客户端按数组解包，null 会触发空引用。
+func hPlayerWarnings(ctx *Ctx) ([]byte, bool) {
+	body, err := proto.EncodeValue(proto.Args(proto.S("189")), ctx.Sess.Table())
+	return body, err == nil
 }
 
 // nullVal 共享的 null 值。

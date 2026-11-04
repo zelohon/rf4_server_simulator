@@ -1,0 +1,86 @@
+name: Preview Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-main
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Build Preview Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOOS: windows
+      GOARCH: amd64
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build preview package
+        id: package
+        run: bash .github/scripts/build-preview.sh "$GITHUB_SHA"
+
+      - name: Publish preview release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package.outputs.version }}
+          name: RF4 Server Simulator ${{ steps.package.outputs.version }}
+          body_path: ${{ steps.package.outputs.release_notes }}
+          files: ${{ steps.package.outputs.asset_path }}
+          prerelease: true
+
+      - name: Keep latest preview release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const keep = 1;
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const previews = releases
+              .filter((release) => release.tag_name.startsWith('preview-'))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            core.info(`Found ${previews.length} preview releases; keeping ${keep}.`);
+            for (const release of previews.slice(keep)) {
+              core.info(`Deleting old preview ${release.tag_name}`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+              });
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${release.tag_name}`,
+                });
+              } catch (error) {
+                if (error.status !== 422) {
+                  throw error;
+                }
+              }
+            }

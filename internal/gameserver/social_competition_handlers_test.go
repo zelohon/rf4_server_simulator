@@ -109,16 +109,18 @@ func TestAchievementsAndFishTrophiesAreDynamic(t *testing.T) {
 	}
 
 	for _, row := range []struct {
-		fish   string
-		weight int64
-		grade  int64
+		fish     string
+		weight   int64
+		grade    int64
+		locLevel string
 	}{
-		{"c.roach", 100, 1},
-		{"c.roach", 300, 2},
-		{"perch", 900, 3},
+		{"c.roach", 100, 1, "level_a"},
+		{"c.roach", 300, 2, "level_a"},
+		{"perch", 900, 3, "level_a"},
+		{"pike", 500, 2, "level_b"},
 	} {
-		if err := env.db.CatchLogInsert(ctx, 42, "level_a", row.weight, row.fish, row.fish, row.weight,
-			0.3, "keep", "worm", row.grade, 10, 20, "level_a"); err != nil {
+		if err := env.db.CatchLogInsert(ctx, 42, "loc", row.weight, row.fish, row.fish, row.weight,
+			0.3, "keep", "worm", row.grade, 10, 20, row.locLevel); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -126,12 +128,24 @@ func TestAchievementsAndFishTrophiesAreDynamic(t *testing.T) {
 	if v.Kind != proto.KindArgs || v.Code == nil || *v.Code != "132" || len(v.Items) != 2 {
 		t.Fatalf("unexpected 3/17 shape: %+v", v)
 	}
-	if v.Items[0].Fields[0].Str == nil || *v.Items[0].Fields[0].Str != "c.roach" {
+	if v.Items[0].Fields[0].Str == nil || *v.Items[0].Fields[0].Str != "level_a" {
 		t.Fatalf("first trophy group=%+v", v.Items[0].Fields[0])
 	}
+	if v.Items[0].Fields[1].Val.Code == nil || *v.Items[0].Fields[1].Val.Code != "129" {
+		t.Fatalf("fish card list container code=%v, want 129", v.Items[0].Fields[1].Val.Code)
+	}
 	cards := v.Items[0].Fields[1].Val.Items
-	if len(cards) != 2 || *cards[0].Fields[2].Num != 300 || *cards[1].Fields[2].Num != 100 {
-		t.Fatalf("cards not weight-sorted: %+v", cards)
+	if len(cards) != 2 {
+		t.Fatalf("level_a should contain one best card per fish: %+v", cards)
+	}
+	if cards[0].Fields[0].Str == nil || *cards[0].Fields[0].Str != "c.roach" || *cards[0].Fields[2].Num != 300 {
+		t.Fatalf("c.roach best card=%+v", cards[0])
+	}
+	if cards[1].Fields[0].Str == nil || *cards[1].Fields[0].Str != "perch" || *cards[1].Fields[2].Num != 900 {
+		t.Fatalf("perch card=%+v", cards[1])
+	}
+	if v.Items[1].Fields[0].Str == nil || *v.Items[1].Fields[0].Str != "level_b" {
+		t.Fatalf("second trophy group=%+v", v.Items[1].Fields[0])
 	}
 }
 

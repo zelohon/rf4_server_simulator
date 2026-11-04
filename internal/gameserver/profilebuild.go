@@ -13,12 +13,14 @@ import (
 
 // 通行证与赛季使用的固定时间常量。
 const (
-	pass745F2     = uint64(131765184000000000)
-	season5013F1  = uint64(134238816000000000)
-	season5013F2  = uint64(134265924000000000)
-	f32Const801F2 = uint32(1092571843) // 801.f2 位型
-	castDepthBits = uint32(1091032928) // 158.f2 = f32 8.4900818
-	profileFlags  = uint32(17 | 0x100) // 0x100：跳过绑定邮箱提示
+	pass745F2                       = uint64(131765184000000000)
+	season5013F1                    = uint64(134238816000000000)
+	season5013F2                    = uint64(134265924000000000)
+	f32Const801F2                   = uint32(1092571843) // 801.f2 位型
+	castDepthBits                   = uint32(1091032928) // 158.f2 = f32 8.4900818
+	profileFlags                    = uint32(17 | 0x100) // 0x100：跳过绑定邮箱提示
+	defaultPlayerConditionPrimary   = store.DefaultPlayerConditionPrimary
+	defaultPlayerConditionSecondary = store.DefaultPlayerConditionSecondary
 
 	// 307.f14 / f16 是客户端保留字段，官方值恒为 0 / 1。
 	// 改动会让客户端在每次收到档案时重复播放"新等级 / 新水域"提示。
@@ -30,6 +32,22 @@ const (
 func BuildPose308() *proto.Value {
 	return wiregen.MustMakeObj("pnbphpdmppe", map[int]*proto.Value{
 		0: proto.F32(0.85), 1: proto.F32(0.9946), 2: proto.F32(0.0),
+		3: proto.F32(1.0), 4: proto.F32(0.0), 5: proto.F32(11.375), 6: proto.F32(0.0),
+		7: proto.U64(uint64(proto.WindowsFiletimeNow())),
+		8: proto.U32(0),
+	})
+}
+
+// buildPose308 使用 SQLite 中的玩家状态构造姿态块；读库失败才回退到协议默认值。
+func (s *Server) buildPose308(ctx context.Context, uid int64) *proto.Value {
+	primary, secondary := defaultPlayerConditionPrimary, defaultPlayerConditionSecondary
+	if s != nil && s.DB != nil {
+		if v, err := s.DB.EnsurePlayerCondition(ctx, uid); err == nil && v != nil {
+			primary, secondary = v.Primary, v.Secondary
+		}
+	}
+	return wiregen.MustMakeObj("pnbphpdmppe", map[int]*proto.Value{
+		0: proto.F32(float32(primary)), 1: proto.F32(float32(secondary)), 2: proto.F32(0.0),
 		3: proto.F32(1.0), 4: proto.F32(0.0), 5: proto.F32(11.375), 6: proto.F32(0.0),
 		7: proto.U64(uint64(proto.WindowsFiletimeNow())),
 		8: proto.U32(0),
@@ -100,15 +118,17 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		placeItems = append(placeItems, proto.BytesOf([]byte(pl)))
 	}
 
-	// 会员：以「到期时间」为唯一真值，避免过期后仍显示已激活。
-	nowUnix := time.Now().Unix()
-	memActive := p.Membership == 1 && p.MembershipExpireAt > nowUnix
-
+	// 会员：kind=1 计时（f11 到期时间）、kind=2 永久（f11=0）。
+	membership := store.MembershipAt(p.Membership, p.MembershipExp, time.Now().Unix())
+	var membershipKind uint32
 	var membershipExp uint64
-	memFlag := uint32(0)
-	if memActive {
-		memFlag = 1
-		membershipExp = uint64(proto.UnixToFiletime(p.MembershipExpireAt))
+	if membership.Active {
+		membershipKind = 1
+		if membership.Permanent {
+			membershipKind = 2
+		} else {
+			membershipExp = uint64(proto.UnixToFiletime(membership.ExpiresAt))
+		}
 	}
 	totalPts := skillPointsTotal(p.Level)
 	if s.skillPointsUnlimited(ctx, uid) {
@@ -138,9 +158,9 @@ func (s *Server) BuildProfile307(ctx context.Context, uid int64) (*proto.Value, 
 		7:  proto.U64(uint64(p.Silver)),
 		8:  proto.U64(uint64(p.Gold)),
 		9:  proto.StrVal(""),
-		10: proto.U32(memFlag),
+		10: proto.U32(membershipKind),
 		11: proto.U64(membershipExp),
-		12: BuildPose308(),
+		12: s.buildPose308(ctx, uid),
 		13: BuildStats322(ctx, s.DB, p.UID),
 		// f14/f16 是客户端自己的保留字段，官方取值恒为 0 / 1。
 		// 曾把欢乐时光状态塞进来做试验，结果客户端把 f14 当"庆祝/提示"枚举，

@@ -42,14 +42,24 @@ const loginXMLTpl = `<logon success="true"><host>%s</host><port>%d</port>` +
 	`<token>%s</token><logintoken>%s</logintoken>` +
 	`<logintokenexpires>%d</logintokenexpires></logon>`
 
+// legacyLoginXMLTpl 是旧版 CN 客户端在 7515 明文兼容口上要求的响应格式。
+// 客户端按 <response> 根节点解析；返回 <logon> 会报 Invalid URI。
+const legacyLoginXMLTpl = `<?xml version="1.0" encoding="UTF-8"?>
+<response success="true"><token>%s</token><host>%s</host><port>%d</port>` +
+	`<region>%s</region><userid>%d</userid><logintoken>%s</logintoken>` +
+	`<logintokenexpires>%d</logintokenexpires></response>`
+
 // LoginServer HTTPS 登录服务：任何路径都返回 <logon> XML（客户端打 /login.php 或 /steam.php）。
 type LoginServer struct {
-	cfg    config.Gateway
-	store  Store
-	log    *slog.Logger
-	srv    *http.Server
-	ln     net.Listener
-	userid int64 // 本进程内递增序号，共享序号不可用时使用
+	cfg       config.Gateway
+	store     Store
+	log       *slog.Logger
+	handler   http.Handler
+	srv       *http.Server
+	ln        net.Listener
+	compatSrv *http.Server
+	compatLn  net.Listener
+	userid    int64 // 本进程内递增序号，共享序号不可用时使用
 }
 
 // NewLoginServer 构建登录服务（含观测指标注册）。
@@ -59,16 +69,26 @@ func NewLoginServer(cfg config.Gateway, store Store, log *slog.Logger, obs *metr
 	if err != nil {
 		return nil, fmt.Errorf("加载 TLS 证书: %w", err)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleLogin)
+	// RF4 CN 客户端会把上游 URL 原样编码进路径，例如：
+	// /lv54/https://api.rf4game.ru/login.php。http.ServeMux 会把其中的
+	// 双斜杠清理为单斜杠并返回 307，客户端随后会因 URI 被破坏而登录失败。
+	// 登录服务本来就接受任意路径，因此直接使用 HandlerFunc，保留 RequestURI。
+	s.handler = http.HandlerFunc(s.handleLogin)
 	s.srv = &http.Server{
 		Addr:              cfg.LoginAddr,
-		Handler:           mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{cert},
 		},
+	}
+	if cfg.LoginCompatAddr != "" {
+		s.compatSrv = &http.Server{
+			Addr:              cfg.LoginCompatAddr,
+			Handler:           s.handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
 	}
 	// 指标（无观测端口时用本地一次性注册表，避免 nil 指标 panic）
 	if obs != nil {
@@ -92,12 +112,25 @@ func (s *LoginServer) Start() (<-chan error, error) {
 		return nil, fmt.Errorf("登录服务监听 %s: %w", s.cfg.LoginAddr, err)
 	}
 	s.ln = tls.NewListener(ln, s.srv.TLSConfig)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := s.srv.Serve(s.ln); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("登录服务 %s: %w", s.cfg.LoginAddr, err)
 		}
 	}()
+	if s.compatSrv != nil {
+		compatLn, err := net.Listen("tcp", s.cfg.LoginCompatAddr)
+		if err != nil {
+			_ = s.ln.Close()
+			return nil, fmt.Errorf("登录兼容口监听 %s: %w", s.cfg.LoginCompatAddr, err)
+		}
+		s.compatLn = compatLn
+		go func() {
+			if err := s.compatSrv.Serve(s.compatLn); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("登录兼容口 %s: %w", s.cfg.LoginCompatAddr, err)
+			}
+		}()
+	}
 	return errCh, nil
 }
 
@@ -109,8 +142,25 @@ func (s *LoginServer) Addr() string {
 	return s.ln.Addr().String()
 }
 
+// CompatAddr 明文 HTTP 兼容口的实际监听地址；未启用时为空。
+func (s *LoginServer) CompatAddr() string {
+	if s.compatLn == nil {
+		return ""
+	}
+	return s.compatLn.Addr().String()
+}
+
 // Shutdown 优雅停机。
-func (s *LoginServer) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *LoginServer) Shutdown(ctx context.Context) error {
+	var first error
+	if s.compatSrv != nil {
+		first = s.compatSrv.Shutdown(ctx)
+	}
+	if err := s.srv.Shutdown(ctx); first == nil {
+		first = err
+	}
+	return first
+}
 
 func (s *LoginServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	loginRequests.Inc()
@@ -145,35 +195,61 @@ func (s *LoginServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	} else if userid <= 0 {
 		userid, _ = s.nextUserid(r.Context())
 	}
-
-	token := NewToken(userid)
 	info := TokenInfo{Userid: userid, IssuedAt: time.Now().Unix(), Region: s.cfg.Region}
 	ttl := time.Duration(s.cfg.TokenTTL) * 24 * time.Hour
-	if err := s.store.SaveToken(r.Context(), token, info, ttl); err != nil {
-		loginErrors.Inc()
-		s.log.Error("保存 token 失败", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	expires := time.Now().Add(ttl).Unix()
+	var token, logintoken, xml string
+	if r.TLS == nil {
+		// 旧版 CN 客户端会把 token 当 URI 片段使用，不能包含 '|' 或 '/'。
+		// 这里沿用旧后端的 32hex token / 48hex logintoken，并登记到同一 SQLite。
+		token = NewLegacyToken()
+		logintoken = NewLegacyLoginToken()
+		if err := s.store.SaveToken(r.Context(), token, info, ttl); err != nil {
+			loginErrors.Inc()
+			s.log.Error("保存兼容 token 失败", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if err := s.store.SaveToken(r.Context(), logintoken, info, ttl); err != nil {
+			loginErrors.Inc()
+			s.log.Error("保存兼容登录 token 失败", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		xml = fmt.Sprintf(legacyLoginXMLTpl,
+			token, s.cfg.AdvertiseHost, s.cfg.AdvertisePort,
+			s.cfg.Region, userid, logintoken, expires)
+	} else {
+		token = NewToken(userid)
+		if err := s.store.SaveToken(r.Context(), token, info, ttl); err != nil {
+			loginErrors.Inc()
+			s.log.Error("保存 token 失败", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// HTTPS 作者通道继续使用 4 段 logintoken。
+		logintoken = NewLogintoken(userid)
+		xml = fmt.Sprintf(loginXMLTpl,
+			s.cfg.AdvertiseHost, s.cfg.AdvertisePort,
+			s.cfg.Region, s.cfg.ServerName, userid,
+			token, logintoken, expires)
 	}
 	loginIssued.Inc()
-
-	expires := time.Now().Add(ttl).Unix()
-	// logintoken 供客户端的 realtime 认证通道使用。认证包要求 token 至少包含
-	// 3 个 '|'，因此这里直接构造短格式 token，避免截断后无法解析。
-	logintoken := NewLogintoken(userid)
-	xml := fmt.Sprintf(loginXMLTpl,
-		s.cfg.AdvertiseHost, s.cfg.AdvertisePort,
-		s.cfg.Region, s.cfg.ServerName, userid,
-		token, logintoken, expires)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if r.TLS == nil {
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(xml)))
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(xml))
 	s.log.Info("登录",
-		"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr,
-		"login", login, "userid", userid, "region", s.cfg.Region,
-		"realtime", s.cfg.AdvertiseHost)
+		"method", r.Method, "request_uri", r.RequestURI, "path", r.URL.Path,
+		"raw_path", r.URL.RawPath, "remote", r.RemoteAddr,
+		"userid", userid, "region", s.cfg.Region, "realtime", s.cfg.AdvertiseHost)
 }
 
 // authenticate 校验或建立账号，返回该账号绑定的 uid。
@@ -265,6 +341,20 @@ func NewToken(userid int64) string {
 		strconv.FormatInt(userid, 10),
 		base64.StdEncoding.EncodeToString(b[:]),
 	}, "|")
+}
+
+// NewLegacyToken 生成旧版 CN 客户端使用的 32 位十六进制 token。
+func NewLegacyToken() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// NewLegacyLoginToken 生成旧版 CN 客户端使用的 48 位十六进制 logintoken。
+func NewLegacyLoginToken() string {
+	var b [24]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // NewLogintoken 生成登录 XML 使用的短 token，供辅助 realtime 通道认证。

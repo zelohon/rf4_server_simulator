@@ -138,9 +138,13 @@ func scanRoster(rows *sql.Rows) ([]*FishRosterRow, error) {
 // 蓝冠线 super_trophy_line_g)；缺失字段返回 nil。
 func (d *DB) GradeLines(ctx context.Context, fishKey string) (val, tro, sup *int64) {
 	var v, t, s sql.NullInt64
-	err := d.SQL.QueryRowContext(ctx,
-		`SELECT trophy_g, trophy_line_g, super_trophy_line_g FROM species_weight WHERE fish_key=?`,
-		fishKey).Scan(&v, &t, &s)
+	err := d.SQL.QueryRowContext(ctx, `
+		SELECT COALESCE(g.qualified_g, w.trophy_g),
+		       COALESCE(g.trophy_g, w.trophy_line_g),
+		       COALESCE(g.blue_trophy_g, w.super_trophy_line_g)
+		FROM species_weight w
+		LEFT JOIN fish_grade_lines g ON g.fish_key = w.fish_key
+		WHERE w.fish_key=?`, fishKey).Scan(&v, &t, &s)
 	if err != nil {
 		return nil, nil, nil
 	}

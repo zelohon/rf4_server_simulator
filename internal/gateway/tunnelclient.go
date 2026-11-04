@@ -137,8 +137,8 @@ func (m *TunnelManager) readLoop(c *tunnel.Conn) {
 }
 
 // sendOpen 发送 OPEN。
-func (m *TunnelManager) sendOpen(sid uint64, token string, reconnect bool, clientIP string) error {
-	op := tunnel.OpenPayload{Token: token, Reconnect: reconnect, ClientIP: clientIP}
+func (m *TunnelManager) sendOpen(sid uint64, token string, userid int64, reconnect bool, clientIP string) error {
+	op := tunnel.OpenPayload{Token: token, Userid: userid, Reconnect: reconnect, ClientIP: clientIP}
 	b, err := json.Marshal(op)
 	if err != nil {
 		return err

@@ -1,11 +1,12 @@
-// launcher —— 图形化常驻监督器：一键初始化并管理 gameserver/gateway/admin。
+// launcher —— 图形化常驻监督器：一键初始化并管理 gameserver/gateway，
+// 并在同一 HTTP 入口内直接挂载 admin 管理 handler。
 //
-// 系统托盘常驻（getlantern/systray，纯 Go 无 CGO）+ 本地 Web 控制面板
-// （默认 http://127.0.0.1:9500）。能力：
+// 系统托盘常驻（getlantern/systray，纯 Go 无 CGO）+ 本地统一 Web 控制中心
+// （默认 http://127.0.0.1:9500）。管理后台不再单独监听端口。能力：
 //   - 首次运行自动初始化数据库（迁移 + 静态配置导入 + 默认管理员）
-//   - 按序启动三进程并做健康检查；崩溃指数退避自动重启
+//   - 按序启动两个游戏服务并做健康检查；崩溃指数退避自动重启
 //   - 托盘菜单：控制面板 / 打开管理后台 / 启停全部 / 退出
-//   - 面板：状态卡片、启停按钮、三进程日志实时尾巴
+//   - 面板：状态卡片、启停按钮、双进程日志实时尾巴
 package main
 
 import (
@@ -21,12 +22,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getlantern/systray"
 
+	"rf4server/internal/admin"
 	"rf4server/internal/config"
 	"rf4server/internal/seed"
+	"rf4server/internal/store"
 	"rf4server/internal/supervisor"
 )
 
@@ -35,10 +39,23 @@ var panelHTML []byte
 
 // 应用状态（托盘/面板共享）。
 type app struct {
-	cfg     *config.Config
-	cfgPath string
-	sup     *supervisor.Supervisor
-	log     logger
+	cfg      *config.Config
+	cfgPath  string
+	sup      *supervisor.Supervisor
+	log      logger
+	panelURL string
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	adminInitMu sync.Mutex
+	adminMu     sync.RWMutex
+	adminSrv    *admin.Server
+	adminDB     *store.DB
+	adminErr    string
+
+	gameMu    sync.RWMutex
+	startGame func(*exec.Cmd) error
 }
 
 type logger interface {
@@ -46,6 +63,13 @@ type logger interface {
 	Warn(string)
 	Error(string)
 }
+
+// adminLogger 将 launcher 的简单 logger 适配为 admin 的键值日志接口。
+type adminLogger struct{ l logger }
+
+func (l adminLogger) Info(msg string, args ...any)  { l.l.Info(logMessage(msg, args...)) }
+func (l adminLogger) Warn(msg string, args ...any)  { l.l.Warn(logMessage(msg, args...)) }
+func (l adminLogger) Error(msg string, args ...any) { l.l.Error(logMessage(msg, args...)) }
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "配置文件路径")
@@ -76,11 +100,19 @@ func main() {
 		cfg.SQLite.StaticPath = *staticDB
 		_ = os.Setenv("RF4_SQLITE_STATIC_PATH", *staticDB)
 	}
-	app := &app{cfg: cfg, cfgPath: *configPath, log: panelLogger{}}
+	appCtx, appCancel := context.WithCancel(context.Background())
+	app := &app{cfg: cfg, cfgPath: *configPath, log: panelLogger{}, ctx: appCtx, cancel: appCancel}
+	defer app.closeAdmin()
 
 	// ---- Web 控制面板（先于首跑 seed 起来：GUI 无控制台，seed 可能耗时
 	// 一分钟，浏览器面板是唯一可视化入口，须立即出现）----
 	mux := http.NewServeMux()
+	// admin 不再单独监听端口，其 handler 直接挂载到统一入口。
+	mux.HandleFunc("/admin/", app.handleAdmin)
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/api/admin/retry", app.handleAdminRetry)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(panelHTML)
@@ -90,8 +122,10 @@ func main() {
 	mux.HandleFunc("/api/start", app.actionHandler("start"))
 	mux.HandleFunc("/api/stop", app.actionHandler("stop"))
 	mux.HandleFunc("/api/restart", app.actionHandler("restart"))
+	mux.HandleFunc("/api/game/config", app.handleGameConfig)
+	mux.HandleFunc("/api/game/launch", app.handleGameLaunch)
 	mux.HandleFunc("/api/open-admin", func(w http.ResponseWriter, r *http.Request) {
-		openBrowser("http://127.0.0.1" + portSuffix(cfg.Admin.HTTPAddr, "8080"))
+		openBrowser(app.panelURL + "#admin")
 		_ = r
 		w.WriteHeader(204)
 	})
@@ -100,9 +134,10 @@ func main() {
 		showFatal("控制面板监听失败", err)
 		return
 	}
+	app.panelURL = "http://" + normalizeLocal(ln.Addr().String())
 	go func() { _ = http.Serve(ln, mux) }()
-	// 启动即用默认浏览器打开控制面板
-	openBrowser("http://" + normalizeLocal(ln.Addr().String()))
+	// 启动即用默认浏览器打开统一控制中心
+	openBrowser(app.panelURL)
 
 	// ---- 首次初始化（幂等）----
 	if seed.NeedsSeed(cfg, *staticDB) {
@@ -119,12 +154,18 @@ func main() {
 		}
 	}
 
+	// ---- 内嵌管理后台 ----
+	if err := app.initAdmin(app.ctx); err != nil {
+		app.log.Error("管理后台初始化失败: " + err.Error())
+	}
+	updateTrayIcon(app)
+
 	// ---- 监督器 ----
 	binDir := filepath.Dir(mustExePath())
 	app.sup = supervisor.New(binDir, *configPath, "logs")
 	app.sup.SetStateCallback(func() { updateTrayIcon(app) })
 
-	// ---- 按序拉起三进程 ----
+	// ---- 按序拉起游戏服务 ----
 	go func() {
 		if err := app.sup.StartAll(); err != nil {
 			app.log.Error("进程启动失败: " + err.Error())
@@ -153,23 +194,23 @@ func (a *app) onTrayReady() {
 	systray.SetTitle("fish-localserver")
 	systray.SetTooltip("fish-localserver 本地服务器")
 
-	mItemPanel = systray.AddMenuItem("打开控制面板", "进程状态与日志")
-	mItemAdmin = systray.AddMenuItem("打开管理后台", "游戏管理后台")
+	mItemPanel = systray.AddMenuItem("打开控制中心", "进程状态、日志与游戏管理")
+	mItemAdmin = systray.AddMenuItem("打开管理后台", "直接进入统一控制中心的管理页面")
 	systray.AddSeparator()
-	mItemStart = systray.AddMenuItem("启动全部", "按序启动三个服务进程")
-	mItemStop = systray.AddMenuItem("停止全部", "停止全部服务进程")
-	mItemRestart = systray.AddMenuItem("重启全部", "重启全部服务进程")
+	mItemStart = systray.AddMenuItem("启动全部", "按序启动两个游戏服务")
+	mItemStop = systray.AddMenuItem("停止全部", "停止全部游戏服务")
+	mItemRestart = systray.AddMenuItem("重启全部", "重启全部游戏服务")
 	systray.AddSeparator()
 	mItemQuit = systray.AddMenuItem("退出", "停止服务并退出")
 
 	go func() {
 		for range mItemPanel.ClickedCh {
-			openBrowser("http://127.0.0.1:9500")
+			openBrowser(a.panelURL)
 		}
 	}()
 	go func() {
 		for range mItemAdmin.ClickedCh {
-			openBrowser("http://127.0.0.1" + portSuffix(a.cfg.Admin.HTTPAddr, "8080"))
+			openBrowser(a.panelURL + "#admin")
 		}
 	}()
 	go func() {
@@ -209,13 +250,16 @@ func updateTrayIcon(a *app) {
 			running++
 		}
 	}
+	a.adminMu.RLock()
+	adminReady := a.adminSrv != nil
+	a.adminMu.RUnlock()
 	switch {
-	case running == 3:
+	case running == 2 && adminReady:
 		systray.SetIcon(iconColor(0)) // 绿
-		systray.SetTooltip("fish-localserver：全部运行中")
-	case running > 0:
+		systray.SetTooltip("fish-localserver：全部就绪")
+	case running > 0 || adminReady:
 		systray.SetIcon(iconColor(1)) // 黄
-		systray.SetTooltip(fmt.Sprintf("fish-localserver：%d/3 运行中", running))
+		systray.SetTooltip(fmt.Sprintf("fish-localserver：%d/2 游戏服务，管理后台=%v", running, adminReady))
 	default:
 		systray.SetIcon(iconColor(2)) // 红
 		systray.SetTooltip("fish-localserver：已停止")
@@ -232,10 +276,19 @@ func (a *app) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		procs = a.sup.Status()
 		lastErr = a.sup.LastError()
 	}
+	a.adminMu.RLock()
+	adminReady := a.adminSrv != nil
+	adminErr := a.adminErr
+	a.adminMu.RUnlock()
+	gamePath, gameRegion := a.gameState()
 	writeJSON(w, map[string]any{
-		"procs":      procs,
-		"last_error": lastErr,
-		"admin":      "http://127.0.0.1" + portSuffix(a.cfg.Admin.HTTPAddr, "8080"),
+		"procs":       procs,
+		"last_error":  lastErr,
+		"admin":       "/admin/",
+		"admin_ready": adminReady,
+		"admin_error": adminErr,
+		"game_path":   gamePath,
+		"game_region": gameRegion,
 	})
 }
 
@@ -288,6 +341,111 @@ func (a *app) actionHandler(action string) http.HandlerFunc {
 	}
 }
 
+func (a *app) initAdmin(ctx context.Context) error {
+	a.adminInitMu.Lock()
+	defer a.adminInitMu.Unlock()
+
+	a.adminMu.RLock()
+	ready := a.adminSrv != nil
+	a.adminMu.RUnlock()
+	if ready {
+		return nil
+	}
+
+	db, err := store.OpenWithStatic(a.cfg.SQLite.Path, a.cfg.SQLite.StaticPath)
+	if err != nil {
+		a.setAdminError(err)
+		return err
+	}
+	if err := db.Migrate(); err != nil {
+		_ = db.Close()
+		a.setAdminError(err)
+		return err
+	}
+	user, pass := a.cfg.Admin.Username, a.cfg.Admin.Password
+	if user == "" {
+		user, pass = "admin", "admin123"
+	}
+	if _, err := db.UpsertAdminPassword(ctx, user, pass); err != nil {
+		_ = db.Close()
+		a.setAdminError(err)
+		return err
+	}
+	srv := admin.NewServer(a.cfg.Admin, db, adminLogger{a.log}, admin.WebFS())
+	a.adminMu.Lock()
+	a.adminDB = db
+	a.adminSrv = srv
+	a.adminErr = ""
+	a.adminMu.Unlock()
+	go a.trackAdminSessions(a.ctx, db, srv)
+	a.log.Info("管理后台已挂载到 /admin/")
+	return nil
+}
+
+func (a *app) setAdminError(err error) {
+	a.adminMu.Lock()
+	a.adminErr = err.Error()
+	a.adminMu.Unlock()
+}
+
+func (a *app) handleAdmin(w http.ResponseWriter, r *http.Request) {
+	a.adminMu.RLock()
+	srv := a.adminSrv
+	a.adminMu.RUnlock()
+	if srv == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, `<!doctype html><meta charset="utf-8"><title>管理后台未就绪</title><style>body{background:#09111d;color:#e8f0f8;font:15px/1.7 "Segoe UI",sans-serif;padding:48px}</style><h2>管理后台尚未就绪</h2><p>请返回“运行控制”查看初始化状态并重试。</p>`)
+		return
+	}
+	http.StripPrefix("/admin", srv.Handler()).ServeHTTP(w, r)
+}
+
+func (a *app) handleAdminRetry(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := a.initAdmin(ctx); err != nil {
+		httpError(w, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) trackAdminSessions(ctx context.Context, db *store.DB, srv *admin.Server) {
+	update := func() {
+		if n, ok, _ := db.KVGet(ctx, "stats:sessions"); ok {
+			var v int64
+			_, _ = fmt.Sscanf(n, "%d", &v)
+			srv.SetSessionCount(v)
+		}
+	}
+	update()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			update()
+		}
+	}
+}
+
+func (a *app) closeAdmin() {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	a.adminMu.Lock()
+	db := a.adminDB
+	a.adminDB = nil
+	a.adminSrv = nil
+	a.adminMu.Unlock()
+	if db != nil {
+		_ = db.Close()
+	}
+}
+
 // ---- 辅助 ----
 
 type panelLogger struct{}
@@ -295,6 +453,13 @@ type panelLogger struct{}
 func (panelLogger) Info(m string)  { fmt.Println("launcher:", m) }
 func (panelLogger) Warn(m string)  { fmt.Println("launcher WARN:", m) }
 func (panelLogger) Error(m string) { fmt.Println("launcher ERROR:", m) }
+
+func logMessage(msg string, args ...any) string {
+	if len(args) == 0 {
+		return msg
+	}
+	return msg + " " + fmt.Sprint(args...)
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -305,22 +470,6 @@ func httpError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(500)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-func portSuffix(addr, defPort string) string {
-	if addr == "" {
-		return ":" + defPort
-	}
-	if len(addr) > 0 && addr[0] == ':' {
-		return addr
-	}
-	// host:port 形式取端口
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[i:]
-		}
-	}
-	return ":" + defPort
 }
 
 // normalizeLocal ":9500"/"9500" → "127.0.0.1:9500"；host:port 原样返回。

@@ -2,7 +2,7 @@
 //
 // 主库（WAL 模式）承载玩家状态、运营表和运行时表（会话凭据、指令队列、
 // 共享 KV）；静态资料库以只读 schema ATTACH。
-// 三个进程（gateway/gameserver/admin）共享同一个主库文件，
+// gateway、gameserver 与内嵌在 launcher 的 admin handler 共享同一个主库文件，
 // 跨进程并发依赖 WAL + busy_timeout。
 package store
 
@@ -46,6 +46,17 @@ func (d *DB) Migrate() error {
 	if err := d.ensureLegacyPlayerColumns(); err != nil {
 		return fmt.Errorf("补全玩家表列: %w", err)
 	}
+	// 历史遗留：本项目的 gateway_account / happy_hour 曾占用 00018/00019，
+	// 与上游同名编号冲突（schema_migrations.version 唯一）。两条迁移本身幂等，
+	// 清掉旧登记后按新编号（00028/00029）重新应用即可。
+	for _, legacy := range []string{
+		"migrations/00018_gateway_account.sql",
+		"migrations/00019_happy_hour.sql",
+	} {
+		if _, err := d.SQL.Exec(`DELETE FROM schema_migrations WHERE name=?`, legacy); err != nil {
+			return fmt.Errorf("清理旧迁移登记 %s: %w", legacy, err)
+		}
+	}
 	entries, err := fs.Glob(migrationsFS, "migrations/*.sql")
 	if err != nil {
 		return err
@@ -67,6 +78,26 @@ func (d *DB) Migrate() error {
 		tx, err := d.SQL.Begin()
 		if err != nil {
 			return err
+		}
+		if name == "migrations/00022_membership_exp_compat.sql" {
+			// 兼容两种历史列名：上游早期用 membership_expires_at，
+			// 本项目自研会员曾用 membership_expire_at（少一个 s）。
+			for _, legacyCol := range []string{"membership_expires_at", "membership_expire_at"} {
+				var legacy int
+				if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('profile') WHERE name=?`, legacyCol).Scan(&legacy); err != nil {
+					_ = tx.Rollback()
+					return err
+				}
+				if legacy == 0 {
+					continue
+				}
+				if _, err := tx.Exec(fmt.Sprintf(
+					`UPDATE profile SET membership_exp=%[1]s WHERE membership_exp=0 AND membership=1 AND %[1]s BETWEEN 1 AND 253402300799`,
+					legacyCol)); err != nil {
+					_ = tx.Rollback()
+					return err
+				}
+			}
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
 			_ = tx.Rollback()
@@ -102,7 +133,7 @@ func (d *DB) ensureLegacyPlayerColumns() error {
 	}{
 		{"profile", "region", "TEXT DEFAULT 'CN'"},
 		{"profile", "membership", "INTEGER NOT NULL DEFAULT 0"},
-		{"profile", "membership_expire_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"profile", "membership_exp", "INTEGER NOT NULL DEFAULT 0"},
 		{"profile", "stars", "INTEGER NOT NULL DEFAULT 0"},
 		{"profile", "created_ts", "REAL"},
 		{"profile", "updated_ts", "REAL"},
@@ -144,6 +175,11 @@ func (d *DB) ensureLegacyPlayerColumns() error {
 		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`,
 			quoteIdentifier(spec.table), quoteIdentifier(spec.column), spec.declSQL)
 		if _, err := d.SQL.Exec(stmt); err != nil {
+			// admin 与 gameserver 可能同时启动并同时补列；后到的进程会收到
+			// duplicate column name，视作已补齐而不是启动失败。
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+				continue
+			}
 			return fmt.Errorf("%s.%s: %w", spec.table, spec.column, err)
 		}
 	}

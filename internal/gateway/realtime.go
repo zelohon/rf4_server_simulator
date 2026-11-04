@@ -286,7 +286,7 @@ func (s *RealtimeServer) handleConn(nc net.Conn) {
 	defer s.sids.Delete(sess.id)
 
 	// 通知主服开新会话
-	if err := s.tm.sendOpen(sess.id, token, reconnect, remoteIP(remote)); err != nil {
+	if err := s.tm.sendOpen(sess.id, token, sess.userid, reconnect, remoteIP(remote)); err != nil {
 		log.Error("隧道 OPEN 失败，断开客户端", "err", err)
 		return
 	}

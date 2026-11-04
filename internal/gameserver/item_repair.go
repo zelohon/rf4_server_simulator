@@ -10,10 +10,10 @@ import (
 // itemPhysicsRepairKey 记录最近一次物理字段修复的版本与统计。
 // 每次启动仍会重新扫描，以修复后续导入或回档产生的异常数据。
 const itemPhysicsRepairKey = "repair:item_physics:v5"
-const itemPhysicsRepairVersion = "7"
+const itemPhysicsRepairVersion = "8"
 
 // RepairItemPhysics 修复已落库物品的物理字段快照：
-//   - 把误落成钓线类的工坊工具和材料改写成自己的实例类；
+//   - 把误落成钓线类的工具、材料和铃铛改写成自己的实例类；
 //   - 重新物化缺失的渔轮子件；
 //   - 补全线、钩、竿、轮的顶层强度；
 //   - 回填零值状态位和容器枚举；

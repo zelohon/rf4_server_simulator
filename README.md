@@ -1,6 +1,6 @@
 # rf4_server_simulator
 
-对一款钓鱼游戏的**本地服务端进行模拟与技术研究**的 Go 实现。项目采用三进程架构（接入网关 / 游戏逻辑服务 / Web 管理后台），使用本地单文件 SQLite，尽量做到无外部中间件即可运行。
+对一款钓鱼游戏的**本地服务端进行模拟与技术研究**的 Go 实现。项目采用统一启动器 + 双服务进程架构（接入网关 / 游戏逻辑服务），管理后台直接内嵌在 launcher 的 Web 入口中，使用本地单文件 SQLite，尽量做到无外部中间件即可运行。
 
 > 本项目由玩家兴趣驱动，不以盈利为目的，不是完整复刻，也不是可直接长期运营的私服方案。
 ## 本项目目前处于持续开发阶段，制作组未收取任何费用，网络上的一切收费行为都是假冒，请勿相信
@@ -8,6 +8,8 @@
 ## 下载即玩（推荐玩家）
 
 如果只是想游玩，**不需要安装 Go，也不需要自行编译**。请前往 [Releases](https://github.com/glance522/rf4_server_simulator/releases/latest) 下载最新的 Windows 已编译版本，解压后阅读包内的“快速开始.txt”，双击“启动服务器.cmd”或 `bin\launcher.exe` 即可运行。
+
+如果正式 Release 更新不及时，可以尝试 [Releases](https://github.com/glance522/rf4_server_simulator/releases) 页面中最新标记为 **Pre-release** 的 **Preview** 版本。Preview 由 `main` 分支最新提交自动构建，包名和发布说明中会标明对应的 Commit ID。
 
 游玩过程中如果遇到 Bug、崩溃、协议异常或功能不符合预期，欢迎在 [Issues](https://github.com/glance522/rf4_server_simulator/issues) 中反馈。为便于定位问题，请尽量提供：
 
@@ -33,6 +35,8 @@
 欢迎正在推进同类本地化、协议研究或服务端实现的同仁，通过 Issue、Pull Request 或其他公开渠道交流进展、协议结论和实现思路。
 
 我们更希望把这里作为一个开放的技术交流与协作入口，而不是收费产品或私服运营项目。发现错误、补齐机制或分享兼容性结论，都是非常有价值的贡献。
+
+提交代码前请阅读 [贡献指南](CONTRIBUTING.md)。所有作者和 AI Agent 都应保持提交职责单一，并遵守项目的开源与使用边界。
 
 ## 当前实现概览
 
@@ -79,22 +83,27 @@
 └──────────────┬─────────────────────────┘
                 │ 内部隧道（明文 RPC 信封，PSK 握手）
                 ▼
-┌────────────── gameserver ──────────────┐        ┌──── admin :8080 ────┐
-│ 信封编解码 / 命令分发 / 推送守卫        │◄───────│ Web 管理后台        │
-│ 钓鱼闭环 / 物品 / 商店 / 邮箱           │ 共享   │ 玩家/库存/鱼口/邮件  │
-└──────────────┬─────────────────────────┘ SQLite └─────────────────────┘
+┌────────────── gameserver ──────────────┐
+│ 信封编解码 / 命令分发 / 推送守卫        │
+│ 钓鱼闭环 / 物品 / 商店 / 邮箱           │
+└──────────────┬─────────────────────────┘
                 ▼
         data/rf4server.db（单文件，WAL）
               + server_data/static.sqlite3（运行期只读 ATTACH）
+                ▲
+┌────────────── launcher :9500 ──────────┐
+│ 运行控制 + 内嵌管理后台 /admin/          │
+└─────────────────────────────────────────┘
 ```
 
 - **gateway**：客户端唯一入口。持有 RC4 会话加密（密码流跨帧连续）、先 ACK
   后转发、传输保活、断线重连接管。
 - **gameserver**：游戏逻辑。命令分发、推送守卫（形状不符拒发）、钓鱼闭环、
   物品/商店/邮箱/技能；管理指令经共享 SQLite 队列消费。
-- **admin**：Control Deck 管理后台（JWT + 内嵌 SPA，无外部依赖）。玩家档案/
-  货币/等级/技能熟练度、背包与护网增删、商店库存覆盖、分水域鱼口控制、
-  多附件邮件、踢人/封禁与全操作审计。
+- **launcher / admin**：统一运行控制与 Control Deck 管理后台（JWT + 内嵌
+  SPA，无外部依赖）。管理 handler 直接挂载在 9500 的 `/admin/`，不再单独
+  监听 8080。功能包括玩家档案/货币/等级/技能熟练度、背包与护网增删、商店
+  库存覆盖、分水域鱼口控制、多附件邮件、踢人/封禁与全操作审计。
 
 ## 适用客户端与接入准备
 
@@ -114,17 +123,18 @@
 双击或运行 `bin/launcher.exe`（无需任何命令行）：
 
 - 首次运行自动创建 `data/` 并初始化本地数据库（迁移 + 静态配置导入 + 默认管理员 `admin/admin123`）
-- 按序启动 gameserver → gateway → admin 并做健康检查；**崩溃自动重启**（指数退避）
+- 按序启动 gameserver → gateway 并做健康检查；**崩溃自动重启**（指数退避）
 - **系统托盘常驻**：绿=全部运行 / 黄=部分 / 红=停止；菜单可打开面板/管理后台、启停全部、退出
-- **控制面板** `http://127.0.0.1:9500`：状态卡片、单进程启停/重启、三路实时日志
-- **管理后台** `http://127.0.0.1:8080`
+- **统一控制中心** `http://127.0.0.1:9500`：状态卡片、单进程启停/重启、双路实时日志
+- **管理后台** `http://127.0.0.1:9500/#admin`：直接内嵌在 launcher 中，不单独占端口
+- **启动游戏**：在统一控制中心保存 `rf4_x64.exe` 绝对路径，点击即可执行 `rf4_x64.exe -region CN`
 
 进阶（可选命令行）：
 
 ```powershell
 bin\seed.exe       -config config.yaml                                   # 仅初始化数据库
 bin\gameserver.exe -config config.yaml                                   # 单独运行某进程
-bin\admin.exe      -config config.yaml -init-admin admin:自定义密码       # 自定义管理员
+bin\gateway.exe    -config config.yaml                                   # 单独运行网关
 ```
 
 ## 从源码运行或自行编译（可选）
@@ -139,15 +149,15 @@ bin\admin.exe      -config config.yaml -init-admin admin:自定义密码       #
 请先检查：
 - Windows 版本，以及当前是否以管理员权限运行；
 - Go 是否已安装，版本是否不低于 1.27.3；
-- 443、9341、8080、9401、9500-9503 端口是否可用。
+- 443、9341、9401、9500-9502 端口是否可用。
 
 然后完成以下工作：
 1. 阅读 README.md、config.yaml 和 docs/deploy.md，说明你将执行的操作。
-2. 构建项目，确认 bin 下生成 gateway.exe、gameserver.exe、admin.exe、seed.exe 和 launcher.exe。
+2. 构建项目，确认 bin 下生成 gateway.exe、gameserver.exe、seed.exe 和 launcher.exe。
 3. 检查 config.yaml 中 gateway.tunnel.psk 与 game.tunnel.psk 一致，sqlite.static_path 指向 server_data/static.sqlite3。
 4. 备份 C:\Windows\System32\drivers\etc\hosts，然后把 api.rf4game.ru 和 api.rf4game.com 指向 127.0.0.1。
 5. 启动一次 gateway 生成 certs/server.crt 和 certs/server.key，并指导我把 server.crt 安装到“受信任的根证书颁发机构”。不要上传或分享私钥。
-6. 启动 bin\launcher.exe，检查 http://127.0.0.1:9500、http://127.0.0.1:8080 以及各服务健康检查。
+6. 启动 bin\launcher.exe，检查 http://127.0.0.1:9500、http://127.0.0.1:9500/#admin 以及各服务健康检查。
 7. 只做构建和运行配置修复，不改变业务逻辑。每一步告诉我执行内容、结果和失败原因；需要管理员权限时先停下让我确认。
 ```
 
@@ -167,8 +177,9 @@ make build
 
 - `config.example.yaml`：模板（入库）
 - `config.yaml`：实际配置（**不入库**，从模板复制后修改）
-- 静态库：`sqlite.static_path`（默认 `server_data/static.sqlite3`），三进程运行期只读 ATTACH
-- 环境变量覆盖：`RF4_SQLITE_PATH`、`RF4_SQLITE_STATIC_PATH`、`RF4_LOG_LEVEL` 等（见 `internal/config`）
+- 静态库：`sqlite.static_path`（默认 `server_data/static.sqlite3`），运行期只读 ATTACH
+- 游戏启动路径保存在 `launcher.game_path`，默认区域参数为 `launcher.game_region: CN`
+- 环境变量覆盖：`RF4_SQLITE_PATH`、`RF4_SQLITE_STATIC_PATH`、`RF4_LOG_LEVEL`、`RF4_GAME_CLIENT_PATH` 等（见 `internal/config`）
 
 ## 运行
 
@@ -176,7 +187,6 @@ make build
 bin\seed.exe       -config config.yaml   # 初始化本地数据库（幂等，仓库自带静态配置库）
 bin\gameserver.exe -config config.yaml
 bin\gateway.exe    -config config.yaml
-bin\admin.exe      -config config.yaml -init-admin admin:你的密码
 ```
 
 详细步骤、管理后台说明、协议约束与故障排查见 [docs/deploy.md](docs/deploy.md)。
@@ -192,7 +202,8 @@ make corpus    # 语料回环测试（语料文件不在仓库中时自动跳过
 
 ```text
 cmd/launcher                        图形化常驻监督器（托盘+面板）
-cmd/gateway|gameserver|admin|seed   服务进程与初始化工具
+cmd/gateway|gameserver|seed        官方构建的进程与初始化工具
+cmd/admin                           独立调试入口（标准 launcher 不启动）
 internal/proto                      协议字节层（帧/RC4/值标记/信封）
 internal/wiregen                    生成的类型表（364 类）+ 语料回环门
 internal/tunnel                     网关↔主服内部隧道

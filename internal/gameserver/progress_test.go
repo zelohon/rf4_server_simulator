@@ -133,7 +133,7 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := db.SQL.ExecContext(ctx,
-			`UPDATE profile SET membership=?, membership_expire_at=? WHERE uid=?`,
+			`UPDATE profile SET membership=?, membership_exp=? WHERE uid=?`,
 			membership, expireAt, uid); err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +149,7 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 	// 有效会员：totalXP = round(229 × 1.10) = 252
 	mk(1000001, 1, future)
 	f := fish(1000001)
-	res := srv.settleCatchXP(ctx, 1000001, f, "worm_01")
+	res := srv.settleCatchXP(ctx, 1000001, f, 1)
 	if res.baseXP != 229 {
 		t.Fatalf("基础经验=%d, want 229（perch 642g grade2）", res.baseXP)
 	}
@@ -191,7 +191,7 @@ func TestSettleMembershipAddsPremiumXP(t *testing.T) {
 	// 非会员：totalXP == baseXP，无加成记录。
 	mk(1000002, 0, 0)
 	f2 := fish(1000002)
-	res2 := srv.settleCatchXP(ctx, 1000002, f2, "worm_01")
+	res2 := srv.settleCatchXP(ctx, 1000002, f2, 1)
 	if res2.totalXP != 229 {
 		t.Fatalf("非会员总经验=%d, want 229", res2.totalXP)
 	}
@@ -229,7 +229,7 @@ func TestHappyHourWindow(t *testing.T) {
 	}
 
 	// 1) 窗口内 + 会员 → active, mult=1.5
-	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=1, membership_expire_at=? WHERE uid=?`, future, uid)
+	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=1, membership_exp=? WHERE uid=?`, future, uid)
 	setWindow(1, 1, curMinute, 60)
 	active, _, mult := srv.HappyHourState(ctx, uid)
 	if !active || mult != 1.5 {
@@ -237,7 +237,7 @@ func TestHappyHourWindow(t *testing.T) {
 	}
 
 	// 2) 窗口内 + 非会员（needs_premium=1）→ 不给加成
-	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=0, membership_expire_at=0 WHERE uid=?`, uid)
+	db.SQL.ExecContext(ctx, `UPDATE profile SET membership=0, membership_exp=0 WHERE uid=?`, uid)
 	active, _, mult = srv.HappyHourState(ctx, uid)
 	if active || mult != 1 {
 		t.Fatalf("窗口内+非会员: active=%v mult=%v, want false 1", active, mult)
@@ -343,7 +343,7 @@ func TestPersonalRecordFlagFollowsKeptWeight(t *testing.T) {
 		t.Fatal(err)
 	}
 	lighter := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 2, WeightG: 642, LengthM: 0.28, LocLevel: "level_001_lake"}
-	res := srv.settleCatchXP(ctx, uid, lighter, "worm_01")
+	res := srv.settleCatchXP(ctx, uid, lighter, 1)
 	if res.isRecord {
 		t.Fatal("642g 未超过已入护的 800g，不应记为个人纪录")
 	}
@@ -352,14 +352,14 @@ func TestPersonalRecordFlagFollowsKeptWeight(t *testing.T) {
 		t.Fatalf("310.f1=%d, want 0（未升级）", got)
 	}
 	heavier := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 4, WeightG: 900, LengthM: 0.35, LocLevel: "level_001_lake"}
-	res2 := srv.settleCatchXP(ctx, uid, heavier, "worm_01")
+	res2 := srv.settleCatchXP(ctx, uid, heavier, 1)
 	if !res2.isRecord {
 		t.Fatal("900g 超过已入护的 800g，应记为个人纪录")
 	}
 	if got := u32Of(srv.buildSettle813(ctx, uid, heavier, res2).Field(8).Val.Field(1).Num); got != 0 {
 		t.Fatalf("破纪录但未升级时 310.f1=%d, want 0", got)
 	}
-	if got := u32Of(srv.build813(ctx, uid, heavier, 900).Field(8).Val.Field(1).Num); got != 0 {
+	if got := u32Of(srv.build813(ctx, uid, heavier, 900, 0).Field(8).Val.Field(1).Num); got != 0 {
 		t.Fatalf("旧路径 310.f1=%d, want 0", got)
 	}
 }
@@ -376,7 +376,7 @@ func TestSettleLevelGainWritesField1(t *testing.T) {
 	// 1 级起手：6000g 的 2 档鱼按 0.4 经验/克 ≈ 2400 经验，足以连升数级。
 	f := &RolledFish{FishGUID: newFishGUID(), Species: "perch", Grade: 2, WeightG: 6000,
 		LengthM: 0.6, LocLevel: "level_001_lake"}
-	res := srv.settleCatchXP(ctx, uid, f, "worm_01")
+	res := srv.settleCatchXP(ctx, uid, f, 1)
 	if res.levelsGained <= 0 {
 		t.Fatalf("前置条件失败：应至少升 1 级，实得 %d", res.levelsGained)
 	}

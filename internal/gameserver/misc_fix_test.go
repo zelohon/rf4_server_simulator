@@ -254,7 +254,8 @@ func TestMiscHandlerContracts(t *testing.T) {
 		if sr.err != nil {
 			t.Fatal(sr.err)
 		}
-		sess2.tunnel = sr.c // 游戏服持隧道主服侧
+		sess2.tunnel = sr.c             // 游戏服持隧道主服侧
+		srv2.sessions[sess2.ID] = sess2 // 公共聊天向已注册会话广播。
 		defer func() { _ = gc.Close(); _ = sr.c.Close() }()
 
 		type pushed struct {

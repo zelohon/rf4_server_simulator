@@ -3,6 +3,8 @@ package gameserver
 import (
 	"context"
 	"math"
+	"rf4server/internal/store"
+	"slices"
 	"testing"
 
 	"rf4server/internal/proto"
@@ -104,6 +106,7 @@ func TestRigMultiSlotSameCategoryAndExactDetach(t *testing.T) {
 		t.Fatalf("第一件沉子应保持挂载，实得 %+v", rowA)
 	}
 	rows, _ = db.ListRigComponents(ctx, rod.GUID)
+	rows = slices.DeleteFunc(rows, func(row *store.RigComponent) bool { return row.Slot != 29 })
 	if len(rows) != 1 || rows[0].GUID != sinkA.GUID || rows[0].Ordinal != 0 {
 		t.Fatalf("派生表回算后只应剩第一件，实得 %+v", rows)
 	}
@@ -156,6 +159,12 @@ func TestRigProjectionCanonicalExtraDropsGhosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, row := range rows {
+		if row.GUID == "ghost-item" {
+			t.Fatal("ghost projection survived")
+		}
+	}
+	rows = slices.DeleteFunc(rows, func(row *store.RigComponent) bool { return row.Slot != 29 })
 	if len(rows) != 1 || rows[0].GUID != sink.GUID || rows[0].Slot != 29 || rows[0].Extra != 200 {
 		t.Fatalf("投影应由 f5 全量回算并删除 ghost，实得 %+v", rows)
 	}

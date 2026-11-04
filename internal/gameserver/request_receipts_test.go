@@ -79,7 +79,7 @@ func newReceiptTestSession(t *testing.T, srv *Server, sid uint64, token string) 
 				continue
 			}
 			env, ok := proto.ParseEnvelope(payload)
-			if ok && env.Marker == -2 {
+			if ok && (env.Marker == -2 || env.Marker == -3) {
 				h.responses <- env
 			}
 		}

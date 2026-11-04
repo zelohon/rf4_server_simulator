@@ -68,6 +68,7 @@ func (t RecordType) String() string {
 // OpenPayload OPEN 记录的 payload。
 type OpenPayload struct {
 	Token     string `json:"token"`
+	Userid    int64  `json:"userid"`
 	Reconnect bool   `json:"reconnect"`
 	ClientIP  string `json:"client_ip"`
 }

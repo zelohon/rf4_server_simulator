@@ -21,6 +21,14 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
 #login{min-height:100vh;display:grid;place-items:center;padding:20px}.login-card{width:min(390px,95vw);padding:28px;background:linear-gradient(160deg,#132539,#0b1521);border:1px solid #2a455f;border-radius:22px;box-shadow:0 30px 90px #000b}.login-card .logo{width:58px;height:58px;margin-bottom:18px}.login-card h1{font-size:23px;margin:0 0 4px}.login-card p{color:var(--muted);margin:0 0 20px}.login-card .field{margin-bottom:12px}
 .notice{position:fixed;left:0;right:0;top:0;z-index:95;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 54px 12px 20px;background:linear-gradient(90deg,#ff9f1c,#ff4d6d 45%,#c026d3);color:#fff;font-weight:800;font-size:15px;letter-spacing:.02em;text-shadow:0 1px 2px #0006;box-shadow:0 10px 30px #0007;animation:noticeIn .35s ease}.notice[hidden]{display:none}.notice .pulse{width:10px;height:10px;flex:0 0 10px;border-radius:50%;background:#fff;box-shadow:0 0 0 0 #ffffff99;animation:pulse 1.6s infinite}.notice .msg{max-width:min(1100px,84vw);text-align:center;line-height:1.5}.notice .msg b{color:#fff45c;font-size:16px}.notice .close{position:absolute;right:14px;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:1px solid #ffffff66;background:#00000026;color:#fff;font-size:15px;line-height:1;display:grid;place-items:center;padding:0}.notice .close:hover{background:#00000055}@keyframes noticeIn{from{transform:translateY(-100%)}to{transform:none}}@keyframes pulse{0%{box-shadow:0 0 0 0 #ffffff99}70%{box-shadow:0 0 0 12px #ffffff00}100%{box-shadow:0 0 0 0 #ffffff00}}body.notice-on{padding-top:56px}
 @media(max-width:1100px){.split{grid-template-columns:1fr}.player-list{max-height:300px}.stats{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:repeat(2,1fr)}.mail-box{grid-template-columns:1fr}}@media(max-width:720px){.shell{grid-template-columns:1fr}.sidebar{height:auto;position:relative;padding:13px}.nav{flex-direction:row;overflow:auto}.nav button{white-space:nowrap}.main{padding:16px}.topbar{align-items:flex-start}.stats,.form-grid,.skills{grid-template-columns:1fr}.modal-bg{padding:8px}}
+
+.main,.card,.view,.sidebar,.nav{min-width:0}.nav{max-width:100%}.player-hero{flex-wrap:wrap}.player-hero>div,.player-row>div{min-width:0;max-width:100%}.player-hero h2,.player-row .n{overflow-wrap:anywhere}
+
+@media(max-width:720px){.shell{grid-template-columns:minmax(0,1fr)}.field.span2{grid-column:auto}.toolbar .grow{min-width:100px}.player-hero .actions,.tabs{flex-wrap:wrap}.tabs button{flex:0 0 auto;white-space:nowrap}.nav button{flex:0 0 auto}}
+
+#fishRulesCard .section-head{flex-wrap:wrap}#fishRulesCard p,#fishRulesCard small{overflow-wrap:anywhere}#fishRulesCard p{margin-bottom:0}
+
+.tunable-group+.tunable-group{margin-top:16px}.tunable-group h3{font-size:14px;margin:0 0 10px}.tunable-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px 16px}.tunable-field{min-width:0}.tunable-field label{display:block;color:var(--muted);margin-bottom:6px;overflow-wrap:anywhere}.tunable-field>div{display:flex;gap:8px;align-items:center}.tunable-field input{min-width:0;flex:1;width:0;padding:7px 9px}.tunable-field button{flex:none}.section-head{flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -55,7 +63,7 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
     <section class="view on" id="view-dashboard"><div class="grid stats" id="stats"></div><div class="card" style="margin-top:16px"><div class="section-head"><h2>运行参数</h2><small>热更新：修改后 30 秒内生效（部分立即生效）</small></div><div id="tunablesBody"></div></div><div class="card" style="margin-top:16px"><div class="section-head"><h2>快捷入口</h2><small>常用管理动作</small></div><div class="actions"><button class="btn" onclick="go('players')">管理玩家</button><button class="btn alt" onclick="go('stores')">修改库存</button><button class="btn alt" onclick="go('fish')">调整鱼口</button><button class="btn alt" onclick="go('mail')">发送邮件</button></div></div></section>
     <section class="view" id="view-players"><div class="split"><div class="card player-list"><div class="toolbar"><input class="grow" id="playerSearch" placeholder="搜索 UID / 昵称" onkeydown="if(event.key==='Enter')loadPlayers()"><button class="btn sm" onclick="loadPlayers()">搜索</button></div><div id="playerList" style="margin-top:12px"></div></div><div class="card" id="playerDetail"><div class="empty">选择左侧玩家开始管理</div></div></div></section>
     <section class="view" id="view-stores"><div class="card"><div class="toolbar"><select id="storeSelect" class="grow" onchange="loadStoreItems()"></select><input id="storeSearch" placeholder="搜索商品 / 名称" onkeydown="if(event.key==='Enter')loadStoreItems()"><button class="btn" onclick="loadStoreItems()">查询</button></div><div id="storeSummary" class="muted" style="margin:12px 0"></div><div class="table-wrap" id="storeTable"></div></div></section>
-    <section class="view" id="view-fish"><div class="grid" style="grid-template-columns:270px minmax(0,1fr)"><div class="card"><div class="section-head"><h2>水域</h2></div><input id="fishSearch" placeholder="筛选水域" oninput="renderFishAreas()"><div id="fishAreas" style="margin-top:10px;max-height:70vh;overflow:auto"></div></div><div class="card" id="fishEditor"><div class="empty">选择水域配置鱼口</div></div></div></section>
+    <section class="view" id="view-fish"><div class="card" id="fishRulesCard" style="margin-bottom:16px"><div class="section-head"><div><h2>新吃饵逻辑 <span class="pill" id="fishRulesBadge">正在读取</span></h2><small>全水域共用，默认关闭；保存后最多 30 秒影响后续判鱼。</small></div><button class="btn alt" id="fishRulesToggle" disabled aria-pressed="false" onclick="toggleFishRules()">正在读取</button></div><p class="muted" id="fishRulesMessage" role="status">正在读取开关。</p><p class="muted">已接入：地图名册、后台启禁、已识别饵料和实钓搭配；没有匹配鱼时不出鱼。</p><p class="muted">待接入：钓点分布、双饵组合、船票与上船、特定动作、海图区号。未识别的搭配暂不放行；GM 指定下一条鱼仍按原规则执行。</p></div><div class="grid" style="grid-template-columns:270px minmax(0,1fr)"><div class="card"><div class="section-head"><h2>水域</h2></div><input id="fishSearch" placeholder="筛选水域" oninput="renderFishAreas()"><div id="fishAreas" style="margin-top:10px;max-height:70vh;overflow:auto"></div></div><div class="card" id="fishEditor"><div class="empty">选择水域配置鱼口</div></div></div></section>
     <section class="view" id="view-mail"><div class="mail-box"><div class="card"><div class="section-head"><h2>撰写邮件</h2><small>队列约 2 秒内由主服投递</small></div><div class="form-grid" style="grid-template-columns:1fr 1fr"><div class="field"><label>收件人 UID</label><input id="mailUid" type="number"></div><div class="field"><label>快捷载入玩家</label><input id="mailPlayerSearch" placeholder="搜索并回车" onkeydown="if(event.key==='Enter')findMailPlayer()"></div></div><div class="field" style="margin-top:12px"><label>邮件正文</label><textarea id="mailText" placeholder="写给玩家的消息…"></textarea></div><div class="section-head" style="margin-top:14px"><h2>附件</h2><button class="btn alt sm" onclick="addAttachment()">+ 添加附件</button></div><div id="attachments"></div><div class="actions"><button class="btn good" onclick="sendMail()">发送邮件</button><button class="btn alt" onclick="previewMail()">预览</button></div></div><div class="card"><div class="section-head"><h2>发送预览</h2></div><div id="mailPreview" class="empty">填写邮件后点击预览</div><div class="section-head" style="margin-top:20px"><h2>常用模板</h2></div><div class="actions"><button class="btn alt sm" onclick="mailTemplate('补偿')">补偿邮件</button><button class="btn alt sm" onclick="mailTemplate('活动奖励')">活动奖励</button><button class="btn alt sm" onclick="mailTemplate('测试')">测试邮件</button></div></div></div></section>
     <section class="view" id="view-audit"><div class="card"><div class="section-head"><h2>最近操作</h2><small>最新 200 条</small></div><div class="table-wrap" id="auditTable"></div></div></section>
   </main>
@@ -63,6 +71,7 @@ button,input,select,textarea{font:inherit;color:var(--text)}button{cursor:pointe
 <div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeModal()"><div class="modal" id="modal"></div></div>
 <div class="toast" id="toast"></div>
 <script>
+let DASHBOARD_TIMER=null;
 let TOKEN=localStorage.getItem('rf4_admin_token')||'';
 let VIEW='dashboard',PLAYER=null,PLAYER_TAB='profile',FISH_AREA='',FISH_CFG=null,STORE_ITEMS=[];
 const $=s=>document.querySelector(s);
@@ -70,8 +79,10 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=n=>Number(n||0).toLocaleString('zh-CN');
 const timeText=ts=>ts?new Date(Number(ts)*1000).toLocaleString('zh-CN'):'-';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const API_ROOT=location.pathname.replace(/\/+$/,'').endsWith('/admin')?'/admin/api':'/api';
+function apiURL(path){return (path==='/api'||path.startsWith('/api/'))?API_ROOT+path.slice(4):path}
 async function api(path,opt={}){
-  const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN,...(opt.headers||{})}});
+  const r=await fetch(apiURL(path),{...opt,headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN,...(opt.headers||{})}});
   const text=await r.text();let data={};try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
   if(!r.ok){if(r.status===401){logout()}throw new Error(data.error||('HTTP '+r.status))}return data;
 }
@@ -92,11 +103,11 @@ async function doLogin(e){
     TOKEN=d.token;localStorage.setItem('rf4_admin_token',TOKEN);await boot();
   }catch(e){toast(e.message,'bad')}
 }
-function logout(){TOKEN='';localStorage.removeItem('rf4_admin_token');$('#app').style.display='none';$('#login').style.display='grid'}
+function logout(){clearInterval(DASHBOARD_TIMER);DASHBOARD_TIMER=null;TOKEN='';localStorage.removeItem('rf4_admin_token');$('#app').style.display='none';$('#login').style.display='grid'}
 async function boot(){
   try{
     const me=await api('/api/me');$('#who').textContent=me.username;$('#login').style.display='none';$('#app').style.display='grid';
-    const initial=location.hash.slice(1);go(titles[initial]?initial:'dashboard',true);setInterval(()=>{if(VIEW==='dashboard'&&TOKEN)loadDashboard().catch(()=>{})},8000);
+    const initial=location.hash.slice(1);go(titles[initial]?initial:'dashboard',true);if(!DASHBOARD_TIMER)DASHBOARD_TIMER=setInterval(()=>{if(VIEW==='dashboard'&&TOKEN)loadDashboard(false).catch(()=>{})},8000);
   }catch(e){logout()}
 }
 const titles={dashboard:['总览','服务器运行状态与快捷操作'],players:['玩家工作台','档案、背包、护网、技能一站式管理'],stores:['商店库存','覆盖静态货架价格与库存'],fish:['鱼口控制','水域鱼种权重、上鱼概率与发鱼延迟'],mail:['邮件中心','发送文本与多附件邮件'],audit:['审计日志','追踪后台管理操作']};
@@ -113,11 +124,11 @@ function refreshCurrent(){
   const jobs={dashboard:loadDashboard,players:()=>loadPlayers(false),stores:loadStores,fish:loadFishAreas,mail:()=>{},audit:loadAudit};
   (jobs[VIEW]||(()=>{}))().catch(e=>toast(e.message,'bad'));
 }
-async function loadDashboard(){
+async function loadDashboard(refreshForm=true){
   const d=await api('/api/dashboard');
   const stats=[['在线会话',d.sessions,'主服实时'],['玩家档案',d.players,'已创建'],['物品实例',d.items,'背包+装备'],['邮件',d.mails,'全部记录'],['运行参数',d.tunables,'热更新'],['审计事件',d.audits,'累计']];
   $('#stats').innerHTML=stats.map(([k,v,s])=>`<div class="card stat"><div class="k">${k}</div><div class="v">${fmt(v)}</div><div class="s">${s}</div></div>`).join('');
-  await loadTunables();
+  if(refreshForm)await loadTunables();
 }
 const TUNABLE_DEFS=[
   ['bite_probability','上鱼概率（1=每竿必出）',1],
@@ -134,14 +145,13 @@ const TUNABLE_DEFS=[
   ['settle_scale_debug','结算刻度调试（0=关）',0],
 ];
 async function loadTunables(){
-  let t={};
-  try{ t=await api('/api/tunables'); }catch(e){}
-  if(!t||typeof t!=='object')t={};
-  const rows=TUNABLE_DEFS.map(([key,label,def])=>{
-    const val=t[key]!==undefined?t[key]:'';
-    return `<tr><td>${esc(label)}</td><td class="mono">${key}</td><td><input type="text" id="tun_${key}" value="${esc(String(val))}" placeholder="默认 ${def}" style="width:110px"></td><td><button class="btn sm" onclick="saveTunable('${key}')">保存</button></td></tr>`;
-  }).join('');
-  $('#tunablesBody').innerHTML=`<div class="table-wrap"><table><thead><tr><th>参数</th><th>键</th><th>值</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+ const t=await api('/api/tunables');
+ const groups=[['咬钩与鱼饵',['bite_probability','bite_delay_fixed','bite_delay_scale','bite_delay_max','bite_delay_lure_max','bait_pref_scale','bait_pref_weight_shift']],['鱼体与搏斗',['fish_weight_scale','fight_power_scale']],['经验与结算',['xp_gain','release_xp_ratio','settle_scale_debug']]];
+
+ $('#tunablesBody').innerHTML=groups.map(([title,keys])=>'<section class="tunable-group"><h3>'+title+'</h3><div class="tunable-fields">'+keys.map(key=>{
+ const [,label,def]=TUNABLE_DEFS.find(x=>x[0]===key);
+ return '<div class="tunable-field"><label for="tun_'+key+'">'+esc(label)+'</label><div><input type="number" step="any" id="tun_'+key+'" value="'+esc(String(t[key]??''))+'" placeholder="默认 '+def+'"><button class="btn alt sm" onclick="saveTunable(\''+key+'\')">保存</button></div>'+'</div>';
+ }).join('')+'</div></section>').join('');
 }
 async function saveTunable(key){
   const v=$('#tun_'+key).value.trim();
@@ -185,7 +195,8 @@ function renderPlayerTab(){
       <div class="field"><label>银币（分）</label><input id="pf_silver" type="number" value="${p.silver}"></div>
       <div class="field"><label>金币（分）</label><input id="pf_gold" type="number" value="${p.gold}"></div>
       <div class="field"><label>银行（分）</label><input id="pf_bank" type="number" value="${p.bank}"></div>
-      <div class="field"><label>会员</label><input value="${p.membership}" disabled></div>
+      <div class="field"><label>会员</label><select id="pf_membership"><option value="0" ${p.membership? '':'selected'}>普通</option><option value="1" ${p.membership===1? 'selected':''}>限时高级会员</option><option value="2" ${p.membership===2? 'selected':''}>永久会员</option></select></div>
+      <div class="field span2"><label>会员到期</label><input id="pf_membership_exp" type="datetime-local" value="${localInput(p.membership_exp)}"></div>
     </div><div class="actions"><button class="btn good" onclick="saveProfile()">保存档案与货币</button><button class="btn alt" onclick="selectPlayer(${p.uid})">撤销修改</button></div>`;
   }
   if(PLAYER_TAB==='items')renderItems();
@@ -193,8 +204,20 @@ function renderPlayerTab(){
   if(PLAYER_TAB==='skills')renderSkills();
   if(PLAYER_TAB==='mail')renderPlayerMail();
 }
+function localInput(ts){
+  if(!ts) return '';
+  const d=new Date(ts*1000), p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 async function saveProfile(){
+  const expRaw=$('#pf_membership_exp').value;
+  const membership=+$('#pf_membership').value;
+  const membership_exp=membership===1&&expRaw?Math.floor(new Date(expRaw).getTime()/1000):0;
   const body={uid:PLAYER.uid,name:$('#pf_name').value,level:+$('#pf_level').value,xp:+$('#pf_xp').value,silver:+$('#pf_silver').value,gold:+$('#pf_gold').value,bank:+$('#pf_bank').value};
+  if(membership!==PLAYER.membership||expRaw!==localInput(PLAYER.membership_exp)){
+    if(membership===1&&(!Number.isFinite(membership_exp)||membership_exp<=Date.now()/1000)){toast('请选择未来的到期时间','bad');return;}
+    body.membership=membership;body.membership_exp=membership_exp;
+  }
   await api('/api/players/update',{method:'POST',body:JSON.stringify(body)});toast('档案已保存，在线玩家将收到 2/1 刷新');await sleep(400);await selectPlayer(PLAYER.uid);
 }
 function renderItems(){
@@ -260,12 +283,35 @@ async function resetStoreRow(i){
   await api('/api/stores/items/reset',{method:'POST',body:JSON.stringify({store_id:x.store_id,item_id:x.item_id})});toast('已恢复静态货架：'+x.item_id);await loadStoreItems();
 }
 let FISH_AREAS=[];
+let FISH_RULES_ENABLED=null;
+async function loadFishRules(){
+  const button=$('#fishRulesToggle');button.disabled=true;
+  try{
+    const values=await api('/api/tunables');FISH_RULES_ENABLED=values.fish_bait_rules_enabled==='1';
+    $('#fishRulesBadge').textContent=FISH_RULES_ENABLED?'已开启':'已关闭';
+    button.textContent=FISH_RULES_ENABLED?'关闭新逻辑':'开启新逻辑';button.setAttribute('aria-pressed',String(FISH_RULES_ENABLED));button.disabled=false;
+    $('#fishRulesMessage').textContent=FISH_RULES_ENABLED?'当前按新规则筛选；上鱼概率和调试预设不能放行不匹配的鱼。':'当前使用旧判鱼流程，饵料主要调整出鱼概率。';
+  }catch(e){FISH_RULES_ENABLED=null;$('#fishRulesBadge').textContent='读取失败';$('#fishRulesMessage').textContent=e.message;button.textContent='暂不可用';}
+}
+async function toggleFishRules(){
+  if(FISH_RULES_ENABLED===null)return;
+  const button=$('#fishRulesToggle');button.disabled=true;
+  try{
+    await api('/api/tunables',{method:'POST',body:JSON.stringify({key:'fish_bait_rules_enabled',value:FISH_RULES_ENABLED?'0':'1'})});
+    await loadFishRules();toast('已保存，最多 30 秒影响后续判鱼');
+  }catch(e){toast(e.message,'bad');button.disabled=false;}
+}
 async function loadFishAreas(){
+  await loadFishRules();
   FISH_AREAS=await api('/api/fish/areas');renderFishAreas();
   if(!FISH_AREA&&FISH_AREAS.length){await selectFishArea(FISH_AREAS[0].loc)}
 }
+// 水域展示顺序：与游戏客户端地图选择顺序一致，未列出的水域排在最后（保持原有相对顺序）。
+const FISH_AREA_ORDER=['克马羚诺也湖','埃尔克湖','惟有诺克河','旧奥斯特罗格湖','白河','廓里湖','梅德韦杰湖','沃尔霍夫河','北顿涅茨河','苏拉河','拉多加湖','琥珀湖','拉多加湖群岛','阿赫图巴河','铜湖','下通古斯卡河','亚马河','挪威海'];
 function renderFishAreas(){
-  const q=($('#fishSearch')?.value||'').toLowerCase();const rows=FISH_AREAS.filter(x=>x.loc.toLowerCase().includes(q));
+  const q=($('#fishSearch')?.value||'').toLowerCase();
+  const orderOf=x=>{const i=FISH_AREA_ORDER.indexOf(x.loc);return i<0?FISH_AREA_ORDER.length:i;};
+  const rows=FISH_AREAS.filter(x=>x.loc.toLowerCase().includes(q)).map((x,i)=>({x,i})).sort((a,b)=>orderOf(a.x)-orderOf(b.x)||a.i-b.i).map(e=>e.x);
   $('#fishAreas').innerHTML=rows.map(x=>`<div class="player-row ${FISH_AREA===x.loc?'on':''}" data-loc="${esc(x.loc)}" onclick="selectFishArea(this.dataset.loc)"><div><div class="n mono">${esc(x.loc)}</div><div class="id">${x.fish_count} 个鱼种</div></div></div>`).join('')||'<div class="empty">没有匹配水域</div>';
 }
 async function selectFishArea(loc){FISH_AREA=loc;renderFishAreas();FISH_CFG=await api('/api/fish/config?loc='+encodeURIComponent(loc));renderFishEditor()}

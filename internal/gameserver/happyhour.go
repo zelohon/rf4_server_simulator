@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"rf4server/internal/proto"
-	"rf4server/internal/store"
 	"rf4server/internal/wiregen"
 )
 
@@ -82,9 +81,6 @@ func (s *Server) HappyHourState(ctx context.Context, uid int64) (active bool, re
 	}
 	return true, remain, cfg.XPMult
 }
-
-// compile-time 保证 store 被引用（IsPremium 用了 store.Profile）
-var _ = store.MembershipForeverExpireAt
 
 // buildBonusList 构造 310.f6 的加成行列表。
 //

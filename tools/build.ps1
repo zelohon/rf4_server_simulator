@@ -2,7 +2,7 @@
 #
 # Usage:
 #   .\tools\build.ps1              # gameserver
-#   .\tools\build.ps1 gateway      # any of gameserver/gateway/admin/seed/launcher
+#   .\tools\build.ps1 gateway      # any of gameserver/gateway/seed/launcher
 #   .\tools\build.ps1 all
 #
 # Important: keep -s -w. An unstripped 26MB build was blocked by Windows
@@ -26,7 +26,11 @@ if (-not $go) { throw 'go not found (install Go or add it to PATH)' }
 
 $version = Get-Date -Format 'yyyyMMddHHmmss'
 $ld = "-s -w -X 'rf4server/internal/buildinfo.Version=$version'"
-$targets = if ($Target -eq 'all') { @('gateway', 'gameserver', 'admin', 'seed') } else { @($Target) }
+$targets = if ($Target -eq 'all') { @('gateway', 'gameserver', 'seed') } else { @($Target) }
+
+if ($Target -eq 'all' -and (Test-Path 'bin/admin.exe')) {
+    Remove-Item -LiteralPath 'bin/admin.exe' -Force
+}
 
 foreach ($t in $targets) {
     $out = "bin/$t.exe"

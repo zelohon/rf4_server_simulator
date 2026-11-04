@@ -233,6 +233,8 @@ func (s *Server) resumeFishingState(st *FishState) {
 		wait = 0
 	}
 	uid := st.persist.uid
-	st.biteTimer = time.AfterFunc(wait, func() { s.onBiteTimer(uid) })
+	st.BiteGen++
+	gen := st.BiteGen
+	st.biteTimer = time.AfterFunc(wait, func() { s.onBiteTimer(uid, gen) })
 	st.mu.Unlock()
 }

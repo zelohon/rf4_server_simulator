@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -73,34 +74,38 @@ type Shortcut struct {
 
 // ListShortcuts 取绑定（container=0）。
 func (d *DB) ListShortcuts(ctx context.Context, uid int64) ([]Shortcut, error) {
-	rows, err := d.SQL.QueryContext(ctx, `
-		SELECT slot, COALESCE(guid,'') FROM container_slot
-		WHERE uid=? AND container=0 AND guid IS NOT NULL AND guid<>'' ORDER BY slot`, uid)
+	tx, err := d.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Shortcut
-	for rows.Next() {
-		var s Shortcut
-		if err := rows.Scan(&s.Slot, &s.GUID); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
+	defer tx.Rollback()
+	bindings, err := loadShortcutBindings(ctx, tx, uid)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return sortedShortcuts(bindings), nil
 }
 
 // BindShortcut 绑定/解绑（guid 空串=解绑）。
 func (d *DB) BindShortcut(ctx context.Context, uid, slot int64, guid string) error {
-	if guid == "" {
-		_, err := d.SQL.ExecContext(ctx, `DELETE FROM container_slot WHERE uid=? AND container=0 AND slot=?`, uid, slot)
+	tx, err := d.SQL.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := d.SQL.ExecContext(ctx, `
-		INSERT INTO container_slot(uid, container, slot, guid) VALUES(?,0,?,?)
-		ON CONFLICT (uid, container, slot) DO UPDATE SET guid=?`, uid, slot, guid, guid)
-	return err
+	defer tx.Rollback()
+	bindings, err := loadShortcutBindings(ctx, tx, uid)
+	if err != nil {
+		return err
+	}
+	if guid == "" {
+		delete(bindings, slot)
+	} else {
+		bindings[slot] = guid
+	}
+	if err := SaveShortcutsTx(ctx, tx, uid, bindings); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---- 鱼护 keepnet ----
@@ -177,24 +182,35 @@ func (d *DB) KeepnetDelete(ctx context.Context, uid int64, echoGUIDs []string) e
 	if len(echoGUIDs) == 0 {
 		return nil
 	}
-	q, args := placeholders(`DELETE FROM keepnet_items WHERE uid=? AND echo_guid IN (`, echoGUIDs, ")")
-	_, err := d.SQL.ExecContext(ctx, q, append([]interface{}{uid}, args...)...)
-	return err
+	tx, err := d.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, guid := range echoGUIDs {
+		if _, err := d.DeleteKeepnetTx(ctx, tx, uid, guid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ---- 钓获日志 ----
 
-// CatchLogInsert 写钓获记录（UNIQUE(source,fish_key,weight_g,loc,spot) 去重由 DB 承担）。
+// CatchLogInsert 记录一次新增钓获；入护重试由 KeepFishingCatch 按鱼 GUID 去重。
 func (d *DB) CatchLogInsert(ctx context.Context, uid int64, loc string, spot int64, fishKey, nameZh string, weightG int64, lengthM float64, source, bait string, grade, xp, silver int64, locLevel string) error {
+	var identifier [16]byte
+	if _, err := rand.Read(identifier[:]); err != nil {
+		return err
+	}
 	// 保留亚秒精度，避免同秒事件排序退化；记录卡时间可精确到 100ns。
 	ts := float64(time.Now().UnixNano()) / 1e9
 	_, err := d.SQL.ExecContext(ctx, `
 		INSERT INTO catch_log(ts, loc, spot, fish_key, name_zh, weight_g, length_m, source,
-		                      bait, grade, xp, silver, loc_level, uid)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT (source, fish_key, weight_g, loc, spot) DO NOTHING`,
+		                      bait, grade, xp, silver, loc_level, uid, catch_guid)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ts, loc, spot, fishKey, nameZh, weightG, lengthM, source,
-		bait, grade, xp, silver, locLevel, uid)
+		bait, grade, xp, silver, locLevel, uid, fmt.Sprintf("%x", identifier))
 	return err
 }
 

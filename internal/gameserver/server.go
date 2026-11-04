@@ -152,7 +152,10 @@ func (s *Server) openSession(c *tunnel.Conn, sid uint64, payload []byte) {
 		s.log.Warn("OPEN payload 解析失败", "err", err)
 		return
 	}
-	userid := useridFromToken(op.Token)
+	userid := op.Userid
+	if userid <= 0 {
+		userid = useridFromToken(op.Token)
+	}
 	sess := newSession(s, sid, op.Token, userid, c)
 
 	// 同 token 重连时替换原会话。原会话不能在持有 s.mu 时关闭，

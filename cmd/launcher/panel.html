@@ -2,93 +2,327 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>fish-localserver 控制面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RF4 控制中心</title>
 <style>
-:root{--bg:#0f1419;--panel:#1a2129;--line:#2a3442;--fg:#d8e1ea;--dim:#7d8b9c;--ok:#22c55e;--warn:#eab308;--bad:#ef4444;--acc:#3b82f6}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font:14px/1.6 "Segoe UI",system-ui,sans-serif;padding:18px}
-h1{font-size:18px;display:flex;align-items:center;gap:10px}
-h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--bad)}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
-.card b{font-size:16px}
-.state{float:right;font-size:12px;padding:2px 10px;border-radius:99px}
-.state.running{background:#14532d40;color:var(--ok)}
-.state.starting,.state.backoff{background:#713f1240;color:var(--warn)}
-.state.stopped,.state.failed{background:#7f1d1d40;color:var(--bad)}
-.meta{color:var(--dim);font-size:12px;margin:6px 0 10px}
-.btns{display:flex;gap:6px}
-button{cursor:pointer;background:#0d1117;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px 12px;font-size:12px}
-button:hover{border-color:var(--acc)}
-button.pri{background:var(--acc);border:none;color:#fff}
-.bar{display:flex;gap:8px;margin-bottom:14px}
-.logs{display:grid;grid-template-columns:1fr;gap:10px}
-.log{background:#0d1117;border:1px solid var(--line);border-radius:8px}
-.log h3{font-size:12px;color:var(--dim);padding:6px 10px;border-bottom:1px solid var(--line)}
-.log pre{height:180px;overflow:auto;padding:8px 10px;font:11px/1.5 Consolas,monospace;white-space:pre-wrap;word-break:break-all}
-a{color:var(--acc)}
+:root{--bg:#09111d;--bg2:#0d1725;--panel:#111e2e;--panel2:#162638;--line:#24384f;--text:#e8f0f8;--muted:#8294aa;--accent:#42b8ff;--accent2:#37e2b0;--danger:#ff6178;--warn:#ffbb55;--ok:#54d98c;--shadow:0 18px 40px #0008}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;overflow:hidden;background:radial-gradient(circle at 80% 0,#17314b 0,transparent 30%),radial-gradient(circle at 0 100%,#122b2a 0,transparent 28%),var(--bg);color:var(--text);font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+button{font:inherit;color:var(--text);cursor:pointer}.topbar{height:66px;display:flex;align-items:center;gap:24px;padding:0 24px;background:#08111ce8;border-bottom:1px solid var(--line);backdrop-filter:blur(16px);position:relative;z-index:2}.brand{display:flex;align-items:center;gap:12px;min-width:220px}.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(145deg,#35d7b0,#2f8cff);display:grid;place-items:center;font-weight:900;color:#06121d;box-shadow:0 8px 22px #35d7b044}.brand b{display:block;font-size:16px;letter-spacing:.03em}.brand span{display:block;color:var(--muted);font-size:10px;letter-spacing:.14em;text-transform:uppercase}.tabs{display:flex;align-items:center;gap:6px;align-self:stretch}.tabs button{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);padding:0 18px;font-weight:650}.tabs button:hover{color:var(--text);background:#122238}.tabs button.on{color:#fff;border-color:var(--accent);background:linear-gradient(180deg,transparent,#12223888)}.health{margin-left:auto;display:flex;align-items:center;gap:9px;color:var(--muted);font-size:12px}.dot{width:9px;height:9px;border-radius:50%;background:var(--danger);box-shadow:0 0 10px currentColor}.main{height:calc(100vh - 66px);min-height:0}.view{display:none;height:100%}.view.on{display:block}.control{overflow:auto;padding:24px 28px 48px}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:18px}.hero h1{font-size:24px;margin:0 0 4px}.hero p{margin:0;color:var(--muted);font-size:12px}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);border-radius:9px;background:#132237;padding:8px 14px;font-weight:650;transition:.16s}.btn:hover{border-color:var(--accent);transform:translateY(-1px)}.btn.pri{background:linear-gradient(135deg,#2aaaf1,#4b7bff);border:0;box-shadow:0 6px 18px #2aaaf12a}.btn.bad{background:#3b1821;border-color:#6c2b3a;color:#ff9aac}.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}.notice{margin:0 0 16px;padding:11px 14px;border:1px solid #70434b;border-radius:10px;background:#361a22;color:#ffc1cc}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:18px}.card{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow)}.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.card b{font-size:15px}.state{font-size:11px;padding:3px 9px;border-radius:999px;background:#26354a;color:#b8c8da}.state.running{background:#123a2e;color:var(--ok)}.state.starting,.state.backoff{background:#453515;color:var(--warn)}.state.stopped,.state.failed{background:#451c26;color:var(--danger)}.meta{color:var(--muted);font-size:11px;margin:8px 0 13px}.btns{display:flex;gap:6px}.btns button{flex:1;border:1px solid var(--line);background:#0a1421;border-radius:8px;padding:6px 8px;font-size:11px}.btns button:hover{border-color:var(--accent)}.logs-title{display:flex;justify-content:space-between;align-items:center;margin:20px 0 10px}.logs-title h2{font-size:16px;margin:0}.logs-title span{color:var(--muted);font-size:11px}.logs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.log{min-width:0;background:#07101a;border:1px solid var(--line);border-radius:12px;overflow:hidden}.log h3{font-size:11px;color:var(--muted);padding:7px 10px;border-bottom:1px solid var(--line);font-family:Consolas,monospace}.log pre{height:220px;overflow:auto;padding:9px 10px;margin:0;font:11px/1.55 Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#b9c8d8}.game-launch{display:grid;grid-template-columns:minmax(180px,235px) minmax(0,1fr) auto;gap:12px 18px;align-items:center;margin-bottom:18px;padding:16px 18px}.game-copy h2{font-size:16px;margin:0 0 3px}.game-copy p{font-size:11px;color:var(--muted);margin:0}.game-editor{min-width:0;display:flex;flex-direction:column;gap:6px}.game-editor input{width:100%;background:#07101a;border:1px solid var(--line);border-radius:9px;color:var(--text);padding:9px 12px;font:12px Consolas,"Microsoft YaHei",monospace;outline:none}.game-editor input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #42b8ff1e}.game-region{font-size:11px;color:var(--muted)}.game-region code{color:#9ed8ff;background:#0a1a29;border:1px solid #1d3b55;border-radius:5px;padding:1px 6px}.game-notice{grid-column:1/-1;padding:8px 11px;border-radius:8px;font-size:12px}.game-notice.ok{background:#123a2e;color:#6ff0b7;border:1px solid #1d5543}.game-notice.bad{background:#441d28;color:#ff91a1;border:1px solid #6b2a39}.admin-view{overflow:hidden;position:relative}.frame{display:none;width:100%;height:100%;border:0;background:#09111d}.frame.on{display:block}.admin-gate{position:absolute;inset:0;display:grid;place-items:center;padding:28px;background:radial-gradient(circle at 50% 15%,#17314b 0,transparent 34%),var(--bg)}.admin-gate.hidden{display:none}.gate-card{width:min(520px,100%);padding:30px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(160deg,var(--panel),var(--bg2));box-shadow:var(--shadow);text-align:center}.gate-icon{width:58px;height:58px;margin:0 auto 16px;border-radius:18px;display:grid;place-items:center;background:#13283c;color:var(--accent);font-size:26px}.gate-card h2{margin:0 0 7px;font-size:20px}.gate-card p{margin:0 0 18px;color:var(--muted);font-size:13px}.muted{color:var(--muted)}@media(max-width:980px){.brand{min-width:0}.brand span{display:none}.grid,.logs{grid-template-columns:1fr}.game-launch{grid-template-columns:1fr}.game-launch .actions{justify-content:flex-start}.control{padding:18px}.health span{display:none}.tabs button{padding:0 12px}}
 </style>
 </head>
 <body>
-<h1><span class="dot" id="dot"></span>fish-localserver 控制面板
-  <span style="font-size:12px;color:var(--dim)">本地服务器监督器</span></h1>
-<div class="bar">
-  <button class="pri" onclick="act('start','')">启动全部</button>
-  <button onclick="act('stop','')">停止全部</button>
-  <button onclick="act('restart','')">重启全部</button>
-  <button onclick="fetch('/api/open-admin',{method:'POST'})">打开管理后台</button>
-</div>
-<div class="grid" id="cards"></div>
-<div class="logs" id="logs"></div>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">RF</div>
+    <div><b>RF4 控制中心</b><span>Run &amp; Manage</span></div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="控制中心页面">
+    <button id="tab-control" class="on" role="tab" aria-selected="true" onclick="showView('control')">运行控制</button>
+    <button id="tab-admin" role="tab" aria-selected="false" onclick="showView('admin')">管理后台</button>
+  </nav>
+  <div class="health"><span class="dot" id="dot"></span><span id="healthText">正在读取服务状态…</span></div>
+</header>
+
+<main class="main">
+  <section id="view-control" class="view control on" role="tabpanel">
+    <div class="hero">
+      <div>
+        <h1>本地服务运行控制</h1>
+        <p>启动、停止与查看 gameserver、gateway 的实时状态和日志；管理后台已内嵌在统一入口中。</p>
+      </div>
+      <div class="actions">
+        <button class="btn pri" onclick="act('start','')">启动全部</button>
+        <button class="btn" onclick="act('stop','')">停止全部</button>
+        <button class="btn" onclick="act('restart','')">重启全部</button>
+        <button class="btn" onclick="showView('admin')">进入管理后台</button>
+      </div>
+    </div>
+    <div class="card game-launch">
+      <div class="game-copy">
+        <h2>启动 RF4 游戏</h2>
+        <p>保存 rf4_x64.exe 的完整路径，之后可直接从控制中心启动。</p>
+      </div>
+      <div class="game-editor">
+        <input id="gamePath" type="text" spellcheck="false" placeholder="D:\Games\RF4EN\Game\rf4_x64.exe" oninput="markGamePathDirty()" onkeydown="if(event.key==='Enter') saveGamePath()">
+        <div class="game-region">启动参数：<code>-region <b id="gameRegion">CN</b></code></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="gameSaveBtn" onclick="saveGamePath()">保存路径</button>
+        <button class="btn pri" id="gameLaunchBtn" onclick="launchGame()" disabled>启动游戏</button>
+      </div>
+      <div class="game-notice" id="gameNotice" hidden></div>
+    </div>
+    <div id="lastError" class="notice" hidden></div>
+    <div class="grid" id="cards"></div>
+    <div class="logs-title"><h2>实时日志</h2><span>每 2 秒自动刷新</span></div>
+    <div class="logs" id="logs"></div>
+  </section>
+
+  <section id="view-admin" class="view admin-view" role="tabpanel">
+    <div class="admin-gate" id="adminGate">
+      <div class="gate-card">
+        <div class="gate-icon">▣</div>
+        <h2 id="gateTitle">管理后台尚未就绪</h2>
+        <p id="gateText">正在读取管理后台初始化状态…</p>
+        <button id="gateStart" class="btn pri" onclick="retryAdmin()" disabled>重试初始化</button>
+      </div>
+    </div>
+    <iframe id="adminFrame" class="frame" title="RF4 管理后台" src="about:blank"></iframe>
+  </section>
+</main>
+
 <script>
-const NAMES = ["gameserver","gateway","admin"];
-const logs = {};   // name -> {next, el}
-let ready = false;
+const NAMES = ["gameserver","gateway"];
+const logState = {};
+let logsReady = false;
+let lastStatus = null;
+let gamePathDirty = false;
+let currentView = location.hash === "#admin" ? "admin" : "control";
+
+function showView(name, updateHash=true){
+  if(name !== "admin") name = "control";
+  currentView = name;
+  document.getElementById("view-control").classList.toggle("on", name === "control");
+  document.getElementById("view-admin").classList.toggle("on", name === "admin");
+  document.getElementById("tab-control").classList.toggle("on", name === "control");
+  document.getElementById("tab-admin").classList.toggle("on", name === "admin");
+  document.getElementById("tab-control").setAttribute("aria-selected", String(name === "control"));
+  document.getElementById("tab-admin").setAttribute("aria-selected", String(name === "admin"));
+  if(updateHash){
+    const hash = name === "admin" ? "#admin" : "#control";
+    if(location.hash !== hash) history.replaceState(null, "", hash);
+  }
+  syncAdminFrame();
+}
 
 async function refresh(){
   try{
-    const st = await (await fetch("/api/status")).json();
-    renderCards(st);
-    if(!ready){ renderLogs(); ready = true; }
-    for(const n of NAMES) pullLogs(n);
-  }catch(e){}
+    const st = await (await fetch("/api/status", {cache:"no-store"})).json();
+    lastStatus = st;
+    renderStatus(st);
+    if(!logsReady){ renderLogs(); logsReady = true; }
+    if(currentView === "control") for(const n of NAMES) pullLogs(n);
+    syncAdminFrame();
+  }catch(e){
+    lastStatus = null;
+    renderOffline();
+  }
 }
-function renderCards(st){
-  const dot = document.getElementById("dot");
-  const running = st.procs.filter(p=>p.state==="running").length;
-  dot.style.background = running===3 ? "var(--ok)" : running>0 ? "var(--warn)" : "var(--bad)";
-  document.getElementById("cards").innerHTML = st.procs.map(p=>{
-    const cls = ["running","starting","backoff","stopped","failed"].includes(p.state)?p.state:"stopped";
-    const zh = {running:"运行中",starting:"启动中",backoff:"等待重启",stopped:"已停止",failed:"失败"}[p.state]||p.state;
-    return `<div class="card"><b>${p.name}</b><span class="state ${cls}">${zh}</span>
-      <div class="meta">PID ${p.pid||"-"} · 重启 ${p.restarts} 次 · 运行 ${Math.floor(p.uptime_s)}s</div>
-      <div class="btns">
-        <button onclick="act('start','${p.name}')">启动</button>
-        <button onclick="act('stop','${p.name}')">停止</button>
-        <button onclick="act('restart','${p.name}')">重启</button>
-      </div></div>`;
+
+function renderStatus(st){
+  renderGameConfig(st);
+  const procs = st.procs || [];
+  const running = procs.filter(p => p.state === "running").length;
+  setHealth(running, procs.length || 2);
+  const err = document.getElementById("lastError");
+  if(st.last_error){ err.hidden = false; err.textContent = "最近错误：" + st.last_error; }
+  else err.hidden = true;
+  let cards = document.getElementById("cards");
+  if(!procs.length){
+    cards.innerHTML = '<div class="card"><b>服务初始化中</b><div class="meta">首跑正在导入数据库和静态配置，请稍候。</div></div>';
+    return;
+  }
+  cards.innerHTML = procs.map(p => {
+    const cls = ["running","starting","backoff","stopped","failed"].includes(p.state) ? p.state : "stopped";
+    const zh = {running:"运行中",starting:"启动中",backoff:"等待重启",stopped:"已停止",failed:"失败"}[p.state] || p.state;
+    return `<div class="card"><div class="card-head"><b>${p.name}</b><span class="state ${cls}">${zh}</span></div>
+      <div class="meta">PID ${p.pid || "-"} · 重启 ${p.restarts || 0} 次 · 运行 ${Math.floor(p.uptime_s || 0)}s</div>
+      <div class="btns"><button onclick="act('start','${p.name}')">启动</button><button onclick="act('stop','${p.name}')">停止</button><button onclick="act('restart','${p.name}')">重启</button></div></div>`;
   }).join("");
 }
-function renderLogs(){
-  document.getElementById("logs").innerHTML = NAMES.map(n=>
-    `<div class="log"><h3>${n}.log</h3><pre id="log-${n}"></pre></div>`).join("");
-  NAMES.forEach(n=>logs[n]={next:0,el:document.getElementById("log-"+n)});
+
+function renderOffline(){
+  document.getElementById("healthText").textContent = "控制面板连接中断";
+  document.getElementById("dot").style.background = "var(--danger)";
 }
-async function pullLogs(n){
-  const slot = logs[n]; if(!slot) return;
+
+function setHealth(running, total){
+  const dot = document.getElementById("dot");
+  dot.style.background = running === total && total > 0 ? "var(--ok)" : running > 0 ? "var(--warn)" : "var(--danger)";
+  document.getElementById("healthText").textContent = running === total && total > 0 ? "全部服务运行中" : `${running}/${total} 服务运行中`;
+}
+
+function renderGameConfig(st){
+  const input = document.getElementById("gamePath");
+  if(!gamePathDirty && document.activeElement !== input){
+    input.value = st.game_path || "";
+  }
+  document.getElementById("gameRegion").textContent = st.game_region || "CN";
+  updateGameButtons();
+}
+
+function markGamePathDirty(){
+  gamePathDirty = true;
+  updateGameButtons();
+}
+
+function updateGameButtons(){
+  const input = document.getElementById("gamePath");
+  const launch = document.getElementById("gameLaunchBtn");
+  if(launch) launch.disabled = !input || !input.value.trim();
+}
+
+function setGameNotice(message, type=""){
+  const el = document.getElementById("gameNotice");
+  if(!message){ el.hidden = true; el.textContent = ""; el.className = "game-notice"; return; }
+  el.hidden = false;
+  el.textContent = message;
+  el.className = "game-notice " + type;
+}
+
+async function readAPIError(r, fallback){
+  try{ return (await r.json()).error || fallback; }catch(e){ return fallback; }
+}
+
+async function saveGamePath(silent=false){
+  const input = document.getElementById("gamePath");
+  const path = input.value.trim();
+  if(!path){
+    setGameNotice("请先填写 rf4_x64.exe 的完整路径", "bad");
+    return false;
+  }
+  const saveBtn = document.getElementById("gameSaveBtn");
+  saveBtn.disabled = true;
   try{
-    const r = await (await fetch(`/api/logs?name=${n}&since=${slot.next}`)).json();
+    const r = await fetch("/api/game/config", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({path})
+    });
+    if(!r.ok) throw new Error(await readAPIError(r, "保存失败"));
+    const data = await r.json();
+    input.value = data.path;
+    document.getElementById("gameRegion").textContent = data.region || "CN";
+    gamePathDirty = false;
+    if(!silent) setGameNotice("路径已保存到配置文件", "ok");
+    return true;
+  }catch(e){
+    setGameNotice(e.message || String(e), "bad");
+    return false;
+  }finally{
+    saveBtn.disabled = false;
+    updateGameButtons();
+  }
+}
+
+async function launchGame(){
+  const launchBtn = document.getElementById("gameLaunchBtn");
+  launchBtn.disabled = true;
+  const oldText = launchBtn.textContent;
+  launchBtn.textContent = "启动中…";
+  try{
+    if(gamePathDirty && !(await saveGamePath(true))) return;
+    const r = await fetch("/api/game/launch", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:"{}"
+    });
+    if(!r.ok) throw new Error(await readAPIError(r, "启动失败"));
+    const data = await r.json();
+    setGameNotice(`已启动 rf4_x64.exe（-region ${data.region || "CN"}）`, "ok");
+  }catch(e){
+    setGameNotice(e.message || String(e), "bad");
+  }finally{
+    launchBtn.textContent = oldText;
+    updateGameButtons();
+  }
+}
+
+function syncAdminFrame(){
+  const frame = document.getElementById("adminFrame");
+  const gate = document.getElementById("adminGate");
+  const title = document.getElementById("gateTitle");
+  const text = document.getElementById("gateText");
+  const start = document.getElementById("gateStart");
+  const ready = !!(lastStatus && lastStatus.admin_ready);
+  if(ready){
+    gate.classList.add("hidden");
+    frame.classList.add("on");
+    if(frame.dataset.loaded !== "1"){
+      frame.dataset.loaded = "1";
+      frame.src = "/admin/";
+    }
+    return;
+  }
+  if(frame.dataset.loaded === "1"){
+    frame.dataset.loaded = "0";
+    frame.src = "about:blank";
+  }
+  gate.classList.remove("hidden");
+  frame.classList.remove("on");
+  start.textContent = "重试初始化";
+  if(!lastStatus){
+    title.textContent = "正在连接控制面板";
+    text.textContent = "读取状态后会自动加载内嵌管理后台。";
+    start.disabled = true;
+    return;
+  }
+  if(lastStatus.admin_error){
+    title.textContent = "管理后台初始化失败";
+    text.textContent = lastStatus.admin_error;
+    start.disabled = false;
+    return;
+  }
+  title.textContent = "管理后台正在初始化";
+  text.textContent = "数据库迁移和管理员凭据同步完成后会自动加载。";
+  start.disabled = true;
+}
+
+function renderLogs(){
+  const root = document.getElementById("logs");
+  root.innerHTML = NAMES.map(n => `<div class="log"><h3>${n}.log</h3><pre id="log-${n}"></pre></div>`).join("");
+  NAMES.forEach(n => { logState[n] = {next:0, el:document.getElementById("log-"+n)}; });
+}
+
+async function pullLogs(name){
+  const slot = logState[name];
+  if(!slot) return;
+  try{
+    const r = await (await fetch(`/api/logs?name=${name}&since=${slot.next}`, {cache:"no-store"})).json();
     if(r.lines && r.lines.length){
       slot.el.textContent = (slot.el.textContent + "\n" + r.lines.join("\n")).split("\n").slice(-400).join("\n");
       slot.el.scrollTop = slot.el.scrollHeight;
     }
-    slot.next = r.next;
+    slot.next = r.next || slot.next;
   }catch(e){}
 }
+
 async function act(action, name){
-  await fetch(`/api/${action}?name=${encodeURIComponent(name)}`, {method:"POST"});
-  setTimeout(refresh, 600);
+  try{
+    const r = await fetch(`/api/${action}?name=${encodeURIComponent(name)}`, {method:"POST"});
+    if(!r.ok){
+      let msg = "操作失败";
+      try{ msg = (await r.json()).error || msg; }catch(e){}
+      throw new Error(msg);
+    }
+    setTimeout(refresh, 500);
+  }catch(e){
+    alert(e.message || String(e));
+  }
 }
+
+async function retryAdmin(){
+  const btn = document.getElementById("gateStart");
+  btn.disabled = true;
+  btn.textContent = "初始化中…";
+  try{
+    const r = await fetch("/api/admin/retry", {method:"POST"});
+    if(!r.ok){
+      let msg = "初始化失败";
+      try{ msg = (await r.json()).error || msg; }catch(e){}
+      throw new Error(msg);
+    }
+    await refresh();
+  }catch(e){
+    alert(e.message || String(e));
+  }finally{
+    btn.textContent = "重试初始化";
+    syncAdminFrame();
+  }
+}
+
+window.addEventListener("hashchange", () => showView(location.hash === "#admin" ? "admin" : "control", false));
+showView(currentView, false);
 refresh();
 setInterval(refresh, 2000);
 </script>

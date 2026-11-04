@@ -136,11 +136,14 @@ func hDynamicRodBreak(ctx *Ctx) ([]byte, bool) {
 			st.CastActive = false
 			st.Hooked = false
 			st.Resolved = true
-			if !outcome.LineBroken {
+			if !outcome.LineBroken && !outcome.ReelDamaged {
 				st.GearGuid = ""
 			}
 			st.mu.Unlock()
-			if outcome.LineBroken {
+			if outcome.ReelDamaged {
+				// 轮子只是降一个耐久阶段，仍留在竿上；本次鱼按超载跑鱼处理。
+				srv.bumpFishingCounter(ctx.Sess.Userid, "escapes")
+			} else if outcome.LineBroken {
 				srv.bumpFishingCounter(ctx.Sess.Userid, "line_breaks")
 			} else {
 				srv.bumpFishingCounter(ctx.Sess.Userid, "rod_breaks")
@@ -153,8 +156,9 @@ func hDynamicRodBreak(ctx *Ctx) ([]byte, bool) {
 			if berr != nil {
 				return nil, false
 			}
-			ctx.Log.Info("17/9 渔具断裂", "rod", shortGUID(rodGUID), "broken", shortGUID(outcome.BrokenGUID),
-				"line", outcome.LineBroken, "removed", len(outcome.RemovedGUIDs))
+			ctx.Log.Info("17/9 渔具超载", "rod", shortGUID(rodGUID), "part", outcome.BreakPart,
+				"broken", shortGUID(outcome.BrokenGUID), "line", outcome.LineBroken,
+				"line_loss_m", outcome.LineLossM, "removed", len(outcome.RemovedGUIDs))
 			return body, true
 		}
 		ctx.Log.Warn("17/9 断件写库失败，回退兼容响应", "rod", shortGUID(rodGUID), "err", err)

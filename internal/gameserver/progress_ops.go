@@ -20,15 +20,16 @@ import (
 
 // settleXpResult 保存一次钓获结算的经验分解和结算状态。
 type settleXpResult struct {
-	baseXP       int64 // 技能倍率后的裸经验（分解中的"基础经验"）
-	totalXP      int64 // 310.f0 = 本条鱼总经验
-	silver       int64 // 展示用银价（catch_silver_cents 口径，不入账）
-	prevBest     int64 // 该鱼种已有纪录重量（813.f6）
-	newLevel     int64 // grant 后等级
-	totalXp      int64 // grant 后累计经验
-	levelsGained int64 // 本次升级数（310.f5）
-	isRecord     bool  // 是否破个人纪录（310.f1：1=是，0=否）
-	skillID      int64 // 310.f2 钓法大类（1 浮钓 / 2 纺车）
+	baseXP       int64   // 技能倍率后的裸经验（分解中的"基础经验"）
+	totalXP      int64   // 310.f0 = 本条鱼总经验
+	silver       int64   // 展示用银价（catch_silver_cents 口径，不入账）
+	prevBest     int64   // 该鱼种已有纪录重量（813.f6）
+	newLevel     int64   // grant 后等级
+	totalXp      int64   // grant 后累计经验
+	levelsGained int64   // 本次升级数（310.f1/f5）
+	isRecord     bool    // 破个人纪录：只进 catch_log 与 321 统计，不写 310.f1
+	skillID      int64   // 310.f2 钓法大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
+	skillGain    float64 // 310.f3 本次实际熟练度增量
 	// 会员 + 欢乐时光加成（B 段）
 	appliedBonuses []uint32 // 生效的加成类型（4=会员 56=欢乐时光），供 310.f6 展示
 	bonusMult      float64  // 本次总倍率（1.0 = 无加成）
@@ -64,8 +65,8 @@ func (s *Server) grantXpMonotonic(ctx context.Context, uid, xpGain int64) (int64
 
 // settleCatchXP 计算并持久化一条钓获的经验、熟练度、纪录和装备磨损。
 // 经验依次经过技能倍率和单调入账；prevBest 在写入 catch_log 前读取。
-func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, bait string) *settleXpResult {
-	r := &settleXpResult{skillID: 1}
+func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, rigType int64) *settleXpResult {
+	r := &settleXpResult{skillID: fishingSkillCatForRig(rigType)}
 	xp0, silver := catchValue(f.Species, f.Grade, f.WeightG)
 	// 技能与全局经验倍率。
 	skillMult := s.tunableF("xp_gain", 1.0)
@@ -96,11 +97,8 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ba
 	r.isRecord = r.prevBest <= 0 || f.WeightG > r.prevBest
 	// 经验入账（累计模型 + 单调）
 	r.newLevel, r.totalXp, r.levelsGained = s.grantXpMonotonic(ctx, uid, r.totalXP)
-	// spinner 饵提升纺车熟练度，其余提升浮钓熟练度，每次 +0.2。
-	if len(bait) >= 7 && bait[:7] == "spinner" {
-		r.skillID = 2
-	}
-	_ = s.DB.AddSkillPoints(ctx, uid, r.skillID, 0.2)
+	// 按实际钓组大类增长；概率随当前熟练度反比下降，满熟练度不再增加。
+	r.skillID, r.skillGain = s.awardFishingProficiency(ctx, uid, rigType)
 	// catch_log 在入护时写入一次；释放鱼不进入统计和纪录。
 	f.XP = r.totalXP
 	f.Silver = r.silver
@@ -111,7 +109,7 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ba
 		"鱼种", f.Species, "重量", f.WeightG, "grade", f.Grade,
 		"基础经验", r.baseXP, "总经验", r.totalXP,
 		"新纪录", r.isRecord, "累计", r.totalXp, "等级", r.newLevel,
-		"升级", r.levelsGained)
+		"升级", r.levelsGained, "技能", r.skillID, "熟练度增量", r.skillGain)
 	return r
 }
 
@@ -310,7 +308,7 @@ func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r
 		0: proto.U64(uint64(r.totalXP)),
 		1: proto.U32(uint32(max64(0, r.levelsGained))),
 		2: proto.U32(uint32(r.skillID)),
-		3: proto.F32(0.2),
+		3: proto.F32(float32(r.skillGain)),
 		4: proto.Null(),
 		5: proto.U32(uint32(max64(0, r.levelsGained))),
 		6: s.buildBonusList(ctx, uid),
@@ -345,8 +343,8 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	st.CastActive = false
 	pending := st.Pending
 	hooked := st.Hooked
-	bait := st.Bait
 	rigType := st.RigType
+	gearGUID := st.GearGuid
 	st.mu.Unlock()
 
 	cctx := ctx.Sess.pushCtx()
@@ -361,7 +359,7 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	}
 	var res *settleXpResult
 	if hasFish {
-		res = s.settleCatchXP(cctx, uid, pending, bait)
+		res = s.settleCatchXP(cctx, uid, pending, rigType)
 		stats813 = s.buildSettle813(cctx, uid, pending, res)
 		profileTree, _ = s.BuildProfile307(cctx, uid)
 		skill312 = s.buildSingleSkill312(cctx, uid, res.skillID)
@@ -385,7 +383,7 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	}
 	obj801, err := wiregen.MakeObj("caagocpofin", map[int]*proto.Value{
 		0:  f0,
-		1:  proto.U32(castBaseDistanceBits(rigType)),
+		1:  proto.U32(s.castDistanceBitsForRig(cctx, uid, gearGUID, rigType)),
 		2:  proto.U32(f32Const801F2),
 		3:  build5003(),
 		4:  proto.Null(),

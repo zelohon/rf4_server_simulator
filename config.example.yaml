@@ -7,12 +7,17 @@ log:
   level: info        # 日志级别：debug | info | warn | error
   format: text       # 日志格式：text | json
 
+launcher:
+  game_path: ""      # rf4_x64.exe 的绝对路径；也可在控制中心页面保存。
+  game_region: "CN" # 启动游戏时传给 -region 的值。
+
 sqlite:
   path: "data/rf4server.db"                  # 所有服务进程共享的主数据库。
   static_path: "server_data/static.sqlite3" # 运行时以只读方式附加的静态目录。
 
 gateway:
   login_addr: ":443"                  # HTTPS 登录监听地址。
+  login_compat_addr: "127.0.0.1:7515" # 可选：旧版 CN 客户端明文 HTTP 登录兼容口；留空则关闭。
   realtime_addr: ":9341"              # 游戏客户端 realtime 监听地址。
   cert_file: "certs/server.crt"       # HTTPS 证书；缺失时自动生成。
   key_file: "certs/server.key"        # HTTPS 私钥；缺失时自动生成。
@@ -46,9 +51,9 @@ game:
   keepalive_interval_sec: 5.0         # 世界时钟推送间隔（秒）。
 
 admin:
-  http_addr: ":8080"                          # 管理后台监听地址。
+  http_addr: ":8080"                          # 仅 cmd/admin 独立调试使用；launcher 不监听此端口。
   jwt_secret: "replace-with-long-random-secret"  # 管理员会话 token 的签名密钥。
-  obs_addr: ":9503"                           # 健康检查、指标和性能分析监听地址。
+  obs_addr: ":9503"                           # 仅 cmd/admin 独立调试使用。
   username: "admin"                           # 管理员用户名。
   password: "replace-with-strong-password"   # 管理员密码；每次启动 admin 时应用。
 
@@ -57,5 +62,6 @@ admin:
 # RF4_GATEWAY_LOGIN_ADDR、RF4_GATEWAY_REALTIME_ADDR、RF4_GATEWAY_ADVERTISE_HOST、
 # RF4_GATEWAY_CERT、RF4_GATEWAY_KEY、RF4_TUNNEL_ADDR、RF4_TUNNEL_PSK、
 # RF4_GAME_TUNNEL_PSK、RF4_ADMIN_HTTP_ADDR、RF4_ADMIN_JWT_SECRET、
+# RF4_GAME_CLIENT_PATH、RF4_GAME_CLIENT_REGION、
 # RF4_GATEWAY_KEEPALIVE_SEC、RF4_KEEPALIVE_INTERVAL_SEC、
 # RF4_BITE_PROBABILITY、RF4_GATEWAY_MAX_CONNS。

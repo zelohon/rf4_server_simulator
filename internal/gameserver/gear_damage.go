@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/rand"
 	"strings"
 
@@ -25,14 +26,24 @@ const (
 	damageEventLineExhausted   = "line_exhausted"
 	damageEventLostOnLineBreak = "lost_on_line_break"
 	damageEventRodBreak        = "rod_break"
+	damageEventReelOverload    = "reel_overload"
 	damageEventRepair          = "repair"
 )
 
 type gearBreakOutcome struct {
 	LineBroken   bool
+	ReelDamaged  bool
+	BreakPart    string // leader / line / reel / rod
+	LineLossM    int64
 	BrokenGUID   string
 	RemovedGUIDs []string
 	UpdatedTrees []*proto.Value
+}
+
+type gearBreakDecision struct {
+	Part     string
+	GUID     string
+	Category int64
 }
 
 // lineBreakTerminalCategories 是断线时随线一起丢失的终端组件。
@@ -40,6 +51,12 @@ type gearBreakOutcome struct {
 var lineBreakTerminalCategories = map[int64]bool{
 	catHook: true, catLead: true, catLeaderLock: true, catWireLeader: true,
 	catLure: true, catBait: true, catFloat: true,
+}
+
+// 子线断只损失钩组；浮漂挂在上方主线，不应跟着消失。
+var leaderBreakLossCategories = map[int64]bool{
+	catHook: true, catLead: true, catLeaderLock: true, catWireLeader: true,
+	catLure: true, catBait: true,
 }
 
 // sourceLineCategories 包含主线及前导/钢丝前导。断任何一项都按断线处理。
@@ -122,37 +139,155 @@ func (s *Server) itemBrokenForMount(ctx context.Context, row *store.Item) bool {
 	return s.itemLength(ctx, row) <= 0
 }
 
-// breakLineOrRod 处理 17/9：按断件品类分流为断线或断竿，并在同一事务内
-// 更新线长/耐久、删除断线终端组件并写入损伤历史。
-func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, brokenGUID string) (*gearBreakOutcome, error) {
+// breakLineOrRod 处理 17/9：客户端只负责报告“已经超载”，服务端重新比较
+// 竿、主线、子线的真实强度，决定断哪一件，不能直接相信客户端上报的断件。
+func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, reportedGUID string) (*gearBreakOutcome, error) {
 	rodGUID = strings.TrimSpace(rodGUID)
-	brokenGUID = strings.TrimSpace(brokenGUID)
+	reportedGUID = strings.TrimSpace(reportedGUID)
 	if rodGUID == "" || rodGUID == zeroGUID {
 		return nil, sql.ErrNoRows
 	}
+	dec, err := s.resolveGearBreak(ctx, uid, rodGUID, reportedGUID)
+	if err != nil {
+		return nil, err
+	}
+	switch dec.Part {
+	case "leader", "line":
+		return s.breakLineTx(ctx, uid, rodGUID, dec.GUID, dec.Category)
+	case "reel":
+		return s.damageReelOverload(ctx, uid, rodGUID, dec.GUID)
+	default:
+		return s.breakRodTx(ctx, uid, rodGUID, dec.GUID)
+	}
+}
+
+// resolveGearBreak 按真实装配决定超载对象。手竿比较竿/主线/子线；
+// 带轮竿额外比较当前耐久阶段的锁轮承力。
+func (s *Server) resolveGearBreak(ctx context.Context, uid int64, rodGUID, reportedGUID string) (gearBreakDecision, error) {
 	rod, err := s.DB.GetItemByGUID(ctx, rodGUID)
 	if err != nil || rod == nil || rod.UID != uid {
-		return nil, sql.ErrNoRows
+		return gearBreakDecision{}, sql.ErrNoRows
 	}
-	if brokenGUID == "" || brokenGUID == zeroGUID {
-		if g, gerr := s.storedRigItemGUID(ctx, rod, csLine); gerr == nil && g != "" {
-			brokenGUID = g
-		} else {
-			brokenGUID = rodGUID
-		}
+	ids := s.rigGearIDs(ctx, uid, rodGUID)
+	spec := s.loadGearSpecForRig(ctx, ids, rodGUID)
+
+	lineGUID := ""
+	if g, gerr := s.DB.GetItemGUIDByRigSlot(ctx, rodGUID, catLine); gerr == nil {
+		lineGUID = g
+	}
+	if lineGUID == "" {
+		lineGUID, _ = s.storedRigItemGUID(ctx, rod, csLine)
+	}
+	leaderGUID := s.rigComponentGuidOf(ctx, rodGUID, catWireLeader)
+	if leaderGUID == "" {
+		leaderGUID = s.rigComponentGuidOf(ctx, rodGUID, gearCatLeader)
 	}
 
-	brokenRow, _ := s.DB.GetItemByGUID(ctx, brokenGUID)
-	brokenCat := int64(0)
-	if brokenRow != nil {
-		if def, derr := s.itemDefForRow(ctx, brokenRow); derr == nil && def != nil {
-			brokenCat = def.Category
+	type candidate struct {
+		part     string
+		guid     string
+		category int64
+		kg       float64
+		priority int
+	}
+	var cs []candidate
+	if lineGUID != "" && spec.LineStrengthKg > 0 {
+		cs = append(cs, candidate{part: "line", guid: lineGUID, category: catLine, kg: spec.LineStrengthKg, priority: 1})
+	}
+	if leaderGUID != "" && spec.LeaderStrengthKg > 0 {
+		leaderCat := catWireLeader
+		leaderRow, _ := s.DB.GetItemByGUID(ctx, leaderGUID)
+		if leaderRow != nil {
+			if def, derr := s.itemDefForRow(ctx, leaderRow); derr == nil && def != nil {
+				leaderCat = def.Category
+			}
+		}
+		cs = append(cs, candidate{part: "leader", guid: leaderGUID, category: leaderCat, kg: spec.LeaderStrengthKg, priority: 0})
+	}
+	if spec.RodPowerKg > 0 {
+		cs = append(cs, candidate{part: "rod", guid: rodGUID, category: gearCatRod, kg: spec.RodPowerKg, priority: 3})
+	}
+	if spec.ReelPresent && ids.ReelGUID != "" && spec.ReelDragKg > 0 {
+		cs = append(cs, candidate{part: "reel", guid: ids.ReelGUID, category: gearCatReel,
+			kg: spec.ReelDragKg, priority: 2})
+	}
+
+	if len(cs) > 0 {
+		best := cs[0]
+		for _, c := range cs[1:] {
+			if c.kg < best.kg-1e-9 || (math.Abs(c.kg-best.kg) <= 1e-9 && c.priority < best.priority) {
+				best = c
+			}
+		}
+		return gearBreakDecision{Part: best.part, GUID: best.guid, Category: best.category}, nil
+	}
+
+	// 物理数据缺失时，按客户端上报品类做兼容回退。
+	if reportedGUID == "" || reportedGUID == zeroGUID {
+		return gearBreakDecision{Part: "rod", GUID: rodGUID, Category: gearCatRod}, nil
+	}
+	if row, rerr := s.DB.GetItemByGUID(ctx, reportedGUID); rerr == nil && row != nil {
+		if def, derr := s.itemDefForRow(ctx, row); derr == nil && def != nil {
+			if sourceLineCategories[def.Category] {
+				return gearBreakDecision{Part: "line", GUID: reportedGUID, Category: def.Category}, nil
+			}
 		}
 	}
-	if sourceLineCategories[brokenCat] {
-		return s.breakLineTx(ctx, uid, rodGUID, brokenGUID)
+	return gearBreakDecision{Part: "rod", GUID: rodGUID, Category: gearCatRod}, nil
+}
+
+// damageReelOverload 在锁轮成为最弱环时让轮子按 20% 阶段掉耐久，最低保留 20%。
+// 轮子不会像线或子线一样从钓组删除；更新后的承力立即写入 reel_performance。
+func (s *Server) damageReelOverload(ctx context.Context, uid int64, rodGUID, reelGUID string) (*gearBreakOutcome, error) {
+	reel, err := s.DB.GetItemByGUID(ctx, reelGUID)
+	if err != nil || reel == nil || reel.UID != uid {
+		return nil, sql.ErrNoRows
 	}
-	return s.breakRodTx(ctx, uid, rodGUID, brokenGUID)
+	before := reel.Durability
+	beforePerf, err := s.syncReelPerformance(ctx, reel)
+	if err != nil {
+		return nil, err
+	}
+	progress := beforePerf.WearProgress + reelDurabilityStep*beforePerf.OilWearFactor
+	after := before
+	for progress+1e-9 >= reelDurabilityStep && after > reelDurabilityStep {
+		after = math.Max(reelDurabilityStep, math.Round((after-reelDurabilityStep)*100)/100)
+		progress -= reelDurabilityStep
+	}
+	if after <= reelDurabilityStep {
+		progress = 0
+	}
+	if after != before {
+		if err := s.persistItemDurability(ctx, reel, after); err != nil {
+			return nil, err
+		}
+	}
+	perf, err := s.syncReelPerformance(ctx, reel)
+	if err != nil {
+		return nil, err
+	}
+	perf.WearProgress = math.Max(0, progress)
+	if err := s.DB.UpsertReelPerformance(ctx, *perf); err != nil {
+		return nil, err
+	}
+	if err := s.DB.AddItemDamageLog(ctx, store.ItemDamageLog{
+		UID: uid, ItemGUID: reel.GUID, ItemID: reel.ItemID, Event: damageEventReelOverload,
+		BeforeDurability: ptrFloat64(before), AfterDurability: ptrFloat64(after),
+		DetailJSON: damageDetailJSON(map[string]any{
+			"rod_guid": rodGUID, "base_drag_kg": perf.BaseDragKg,
+			"locked_drag_kg": perf.LockedDragKg, "lock_multiplier": reelLockMultiplier(after),
+			"bearing_item_id": perf.BearingItemID, "bearing_quality": perf.BearingQuality,
+			"bearing_factor": perf.BearingFactor, "oil_item_id": perf.OilItemID,
+			"oil_quality": perf.OilQuality, "oil_wear_factor": perf.OilWearFactor,
+			"wear_progress": perf.WearProgress,
+		}),
+	}); err != nil {
+		return nil, err
+	}
+	updated := s.loadUpdatedTrees(ctx, []string{rodGUID, reelGUID})
+	return &gearBreakOutcome{
+		ReelDamaged: true, BreakPart: "reel", BrokenGUID: reelGUID, UpdatedTrees: updated,
+	}, nil
 }
 
 func (s *Server) storedRigItemGUID(ctx context.Context, rod *store.Item, csName string) (string, error) {
@@ -183,7 +318,7 @@ func updateItemFieldsTx(ctx context.Context, db *store.DB, tx *sql.Tx, row *stor
 	return nil
 }
 
-func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID string) (*gearBreakOutcome, error) {
+func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID string, breakCategory int64) (*gearBreakOutcome, error) {
 	tx, err := s.DB.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -198,6 +333,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 	if err != nil {
 		return nil, err
 	}
+	brokenRow, _ := s.DB.GetItemByGUIDTx(ctx, tx, brokenGUID)
 
 	lineGUID, _ := s.storedRigItemGUID(ctx, rod, csLine)
 	if lineGUID == "" {
@@ -210,6 +346,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 	var lineRow *store.Item
 	var lineFields []proto.Field
 	beforeLength, afterLength, lossLength := int64(0), int64(0), int64(0)
+	mainLineBreak := breakCategory == catLine
 	if lineGUID != "" {
 		lineRow, _ = s.DB.GetItemByGUIDTx(ctx, tx, lineGUID)
 		if lineRow != nil {
@@ -223,22 +360,30 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 					beforeLength = lineLengthM(def)
 				}
 			}
-			lossLength = lineBreakLoss(beforeLength, 0)
-			afterLength = beforeLength - lossLength
-			if afterLength < 0 {
-				afterLength = 0
-			}
-			if afterLength > 0 {
-				if !setItemLengthField(lineRow, lineFields, afterLength) {
-					return nil, errLineLengthField
+			afterLength = beforeLength
+			if mainLineBreak {
+				// 用户规则：断主线固定损失 5 米；断子线不扣主线长度。
+				lossLength = lineBreakLoss(beforeLength, 5)
+				afterLength = beforeLength - lossLength
+				if afterLength < 0 {
+					afterLength = 0
 				}
-				if err := updateItemFieldsTx(ctx, s.DB, tx, lineRow, lineFields); err != nil {
-					return nil, err
+				if afterLength > 0 {
+					if !setItemLengthField(lineRow, lineFields, afterLength) {
+						return nil, errLineLengthField
+					}
+					if err := updateItemFieldsTx(ctx, s.DB, tx, lineRow, lineFields); err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
 	}
 
+	lossCategories := lineBreakTerminalCategories
+	if !mainLineBreak {
+		lossCategories = leaderBreakLossCategories
+	}
 	var removed []string
 	terminalRows := map[string]*store.Item{}
 	var terminalGUIDs []string
@@ -250,7 +395,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 				_ = rows.Close()
 				return nil, err
 			}
-			if guid != "" && lineBreakTerminalCategories[slot] {
+			if guid != "" && lossCategories[slot] {
 				terminalGUIDs = append(terminalGUIDs, guid)
 			}
 		}
@@ -268,7 +413,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 	// f5 中可能还有尚未投影到 rig_component 的组件，按类别一并清理。
 	stored := protoFieldAt(rodFields, rod.WireClass, csRigObject)
 	for _, comp := range rigCompsOf(stored) {
-		if comp.GUID == "" || !lineBreakTerminalCategories[comp.Category] {
+		if comp.GUID == "" || !lossCategories[comp.Category] {
 			continue
 		}
 		if _, ok := terminalRows[comp.GUID]; !ok {
@@ -305,7 +450,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 	}
 
 	comps := rigCompsOf(stored)
-	for cat := range lineBreakTerminalCategories {
+	for cat := range lossCategories {
 		deleteRigCategory(comps, cat)
 	}
 	if lineRow != nil && afterLength <= 0 {
@@ -325,7 +470,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 		return nil, err
 	}
 
-	if lineRow != nil {
+	if mainLineBreak && lineRow != nil {
 		entry := store.ItemDamageLog{
 			UID: uid, ItemGUID: lineRow.GUID, ItemID: lineRow.ItemID, Event: damageEventLineBreak,
 			BeforeDurability: ptrFloat64(lineRow.Durability), AfterDurability: ptrFloat64(lineRow.Durability),
@@ -341,14 +486,30 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 				return nil, err
 			}
 		}
+	} else {
+		if brokenRow != nil {
+			entry := store.ItemDamageLog{
+				UID: uid, ItemGUID: brokenRow.GUID, ItemID: brokenRow.ItemID, Event: damageEventLineBreak,
+				BeforeDurability: ptrFloat64(brokenRow.Durability), AfterDurability: ptrFloat64(brokenRow.Durability),
+				BrokenGUID: brokenGUID,
+				DetailJSON: damageDetailJSON(map[string]any{"rod_guid": rodGUID, "reason": "leader_break", "loss_m": 0}),
+			}
+			if err := store.AddItemDamageLog(ctx, tx, entry); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	out := &gearBreakOutcome{LineBroken: true, BrokenGUID: brokenGUID, RemovedGUIDs: removed}
+	part := "leader"
+	if mainLineBreak {
+		part = "line"
+	}
+	out := &gearBreakOutcome{LineBroken: true, BreakPart: part, LineLossM: lossLength, BrokenGUID: brokenGUID, RemovedGUIDs: removed}
 	updated := []string{rodGUID}
-	if lineRow != nil && afterLength > 0 {
+	if mainLineBreak && lineRow != nil && afterLength > 0 {
 		updated = append(updated, lineRow.GUID)
 	}
 	out.UpdatedTrees = s.loadUpdatedTrees(ctx, updated)
@@ -391,7 +552,7 @@ func (s *Server) breakRodTx(ctx context.Context, uid int64, rodGUID, brokenGUID 
 		return nil, err
 	}
 	return &gearBreakOutcome{
-		LineBroken: false, BrokenGUID: brokenGUID,
+		LineBroken: false, BreakPart: "rod", BrokenGUID: brokenGUID,
 		UpdatedTrees: s.loadUpdatedTrees(ctx, []string{rodGUID}),
 	}, nil
 }

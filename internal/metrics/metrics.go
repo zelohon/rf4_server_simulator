@@ -5,8 +5,8 @@
 //	/metrics         Prometheus 指标
 //	/debug/pprof     Go 性能剖析
 //
-// gateway / gameserver / admin 三个进程各自起一个（默认用独立端口），
-// 健康检查与指标全部走这一处，业务端口保持纯粹。
+// gateway / gameserver / admin 各自可起一个（默认用独立端口）。标准 launcher
+// 只启动 gateway、gameserver；admin handler 内嵌在 launcher 中。
 package metrics
 
 import (

@@ -9,11 +9,9 @@
 | `gateway` | 443/TCP | HTTPS 登录端点。 |
 | `gateway` | 9341/TCP | 游戏客户端实时连接。 |
 | `gameserver` | 9401/TCP | 网关到游戏服务器的内部隧道。仅绑定到可信网络接口。 |
-| `admin` | 8080/TCP | Web 管理控制台。 |
-| `launcher` | 9500/TCP | 本地进程控制面板。 |
+| `launcher` | 9500/TCP | 本地控制中心，同时提供内嵌管理后台 `/admin/`。 |
 | `gateway` | 9501/TCP | 健康检查、就绪检查、指标和性能分析。 |
 | `gameserver` | 9502/TCP | 健康检查、就绪检查、指标和性能分析。 |
-| `admin` | 9503/TCP | 健康检查、就绪检查、指标和性能分析。 |
 
 观测端点提供 `/healthz`、`/readyz`、`/metrics` 和 `/debug/pprof`。
 
@@ -61,7 +59,25 @@ bin\seed.exe -config config.yaml
 bin\launcher.exe
 ```
 
-首次使用时，launcher 会初始化数据库，启动 `gameserver`、`gateway` 和 `admin`，执行健康检查，并重启已退出的进程。控制面板地址为 `http://127.0.0.1:9500`。
+首次使用时，launcher 会初始化数据库，启动 `gameserver` 和 `gateway`，执行健康检查，并重启已退出的进程。管理后台 handler 直接内嵌在 launcher 中，统一入口为 `http://127.0.0.1:9500`，不再监听独立的 8080 管理端口。
+
+### 从控制中心启动游戏
+
+在统一控制中心的“运行控制”页填写 `rf4_x64.exe` 的绝对路径并保存。路径会写入当前 `config.yaml` 的：
+
+```yaml
+launcher:
+  game_path: 'D:\Games\RF4EN\Game\rf4_x64.exe'
+  game_region: "CN"
+```
+
+点击“启动游戏”后，launcher 直接执行：
+
+```text
+D:\Games\RF4EN\Game\rf4_x64.exe -region CN
+```
+
+只接受本机同源页面调用，路径必须是存在的绝对路径，且文件名为 `rf4_x64.exe`。
 
 ### 手动启动
 
@@ -70,10 +86,9 @@ bin\launcher.exe
 ```powershell
 bin\gameserver.exe -config config.yaml
 bin\gateway.exe -config config.yaml
-bin\admin.exe -config config.yaml
 ```
 
-管理员控制台：`http://127.0.0.1:8080`
+手动运行这两个进程不会启动管理控制台；管理控制台随 `launcher` 的 9500 统一入口提供。
 
 默认本地开发凭据为 `admin` / `admin123`。对于任何未与本地计算机隔离的环境，请在 `config.yaml` 中替换这些凭据。
 
@@ -93,7 +108,7 @@ bin\admin.exe -config config.yaml
 
 ## 数据
 
-主数据库是一个 SQLite 文件，通常为 `data/rf4server.db`，由三个服务器进程共享使用，并启用 WAL 模式。
+主数据库是一个 SQLite 文件，通常为 `data/rf4server.db`，由 gameserver、gateway 和内嵌管理后台共享使用，并启用 WAL 模式。
 
 静态目录存储在 `server_data/static.sqlite3` 中，运行时以只读方式挂载。隔离模型详见 [static_runtime_isolation.md](static_runtime_isolation.md)。
 
@@ -106,4 +121,4 @@ bin\admin.exe -config config.yaml
 - 在处理客户端帧之前先发送 ACK。改变这一顺序会破坏客户端协议。
 - 服务器到客户端的推送必须使用预期的顶层 value 结构，并通过响应契约检查。无效推送会被拒绝，而不会发送。
 - 世界时钟 keepalive 间隔必须小于客户端连接超时时间。默认为 5 秒；客户端在没有下行数据约 10 秒后断开连接。世界时钟使用 UTC。
-- 将管理、隧道、launcher 和观测端口绑定到可信网络接口。替换所有默认凭据和密钥。
+- 将 launcher、隧道和观测端口绑定到可信网络接口。替换所有默认凭据和密钥。
