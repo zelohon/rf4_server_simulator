@@ -340,7 +340,7 @@ func (s *Server) breakComponentTx(ctx context.Context, uid int64, rodGUID, compG
 		depth := rigDepthOf(stored, defaultDepthFor(name, rigType))
 		if idx := fieldIdxByCS(rod.WireClass, csRigObject); idx >= 0 && idx < len(rodFields) {
 			rodFields[idx].Op = "VAL"
-			rodFields[idx].Val = buildRig153WithClip(name, rigType, comps, depth, rigClipOf(stored))
+			rodFields[idx].Val = buildRig153Full(name, rigType, comps, depth, rigClipOf(stored), rigBaitMountOf(stored))
 		}
 		if err := updateItemFieldsTx(ctx, s.DB, tx, rod, rodFields); err != nil {
 			return nil, err
@@ -672,7 +672,7 @@ func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID
 	depth := rigDepthOf(stored, defaultDepthFor(name, rigType))
 	if idx := fieldIdxByCS(rod.WireClass, csRigObject); idx >= 0 && idx < len(rodFields) {
 		rodFields[idx].Op = "VAL"
-		rodFields[idx].Val = buildRig153WithClip(name, rigType, comps, depth, rigClipOf(stored))
+		rodFields[idx].Val = buildRig153Full(name, rigType, comps, depth, rigClipOf(stored), rigBaitMountOf(stored))
 	}
 	if err := updateItemFieldsTx(ctx, s.DB, tx, rod, rodFields); err != nil {
 		return nil, err

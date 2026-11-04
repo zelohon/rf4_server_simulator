@@ -229,7 +229,7 @@ func removeConsumedRigReferenceTx(ctx context.Context, db *store.DB, tx *sql.Tx,
 	}
 	delete(comps, key)
 	name, rt, _ := rigIdentity(f5)
-	fields[idx].Val = buildRig153WithClip(name, rt, comps, rigDepthOf(f5, 100), rigClipOf(f5))
+	fields[idx].Val = buildRig153Full(name, rt, comps, rigDepthOf(f5, 100), rigClipOf(f5), rigBaitMountOf(f5))
 	return updateItemFieldsTx(ctx, db, tx, parent, fields)
 }
 
